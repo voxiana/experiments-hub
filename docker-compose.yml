@@ -1,0 +1,342 @@
+version: '3.8'
+
+services:
+  # ============================================================================
+  # Infrastructure Services
+  # ============================================================================
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: voiceai-postgres
+    environment:
+      POSTGRES_DB: voiceai
+      POSTGRES_USER: voiceai
+      POSTGRES_PASSWORD: voiceai
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voiceai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: voiceai-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: voiceai-qdrant
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: voiceai-clickhouse
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: voiceai_analytics
+      CLICKHOUSE_USER: voiceai
+      CLICKHOUSE_PASSWORD: voiceai
+
+  # ============================================================================
+  # AI Services (GPU-enabled)
+  # ============================================================================
+
+  asr-service:
+    build:
+      context: ./asr_service
+      dockerfile: Dockerfile
+    container_name: voiceai-asr
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      WHISPER_MODEL: large-v3
+      DEVICE: cuda
+    ports:
+      - "50051:50051"
+    volumes:
+      - model_cache:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - redis
+
+  nlu-service:
+    build:
+      context: ./nlu_service
+      dockerfile: Dockerfile
+    container_name: voiceai-nlu
+    environment:
+      VLLM_URL: http://vllm:8000
+      RAG_URL: http://rag-service:8080
+      CRM_URL: http://connectors:8090
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8001:8001"
+    depends_on:
+      - redis
+      - rag-service
+
+  tts-service:
+    build:
+      context: ./tts_service
+      dockerfile: Dockerfile
+    container_name: voiceai-tts
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      DEVICE: cuda
+    ports:
+      - "8002:8002"
+    volumes:
+      - model_cache:/root/.cache
+      - ./tts_service/voices:/app/voices
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  rag-service:
+    build:
+      context: ./rag_service
+      dockerfile: Dockerfile
+    container_name: voiceai-rag
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      DEVICE: cuda
+      QDRANT_URL: http://qdrant:6333
+    ports:
+      - "8080:8080"
+    volumes:
+      - model_cache:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - qdrant
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: voiceai-vllm
+    runtime: nvidia
+    command: >
+      --model Qwen/Qwen2.5-72B-Instruct
+      --quantization awq
+      --dtype half
+      --max-model-len 8192
+      --gpu-memory-utilization 0.9
+      --enable-chunked-prefill
+      --api-key dummy
+    ports:
+      - "8000:8000"
+    volumes:
+      - model_cache:/root/.cache
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      HF_HOME: /root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 2  # Use 2 GPUs for 72B model
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ============================================================================
+  # Application Services
+  # ============================================================================
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: voiceai-gateway
+    environment:
+      DATABASE_URL: postgresql+asyncpg://voiceai:voiceai@postgres:5432/voiceai
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      ASR_SERVICE_URL: asr-service:50051
+      NLU_SERVICE_URL: http://nlu-service:8001
+      TTS_SERVICE_URL: http://tts-service:8002
+      RAG_SERVICE_URL: http://rag-service:8080
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - asr-service
+      - nlu-service
+      - tts-service
+      - rag-service
+    volumes:
+      - ./gateway:/app
+    restart: unless-stopped
+
+  connectors:
+    build:
+      context: ./connectors
+      dockerfile: Dockerfile
+    container_name: voiceai-connectors
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://voiceai:voiceai@postgres:5432/voiceai
+    ports:
+      - "8090:8090"
+    depends_on:
+      - postgres
+      - redis
+
+  # ============================================================================
+  # Worker Services
+  # ============================================================================
+
+  celery-worker:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile
+    container_name: voiceai-celery-worker
+    command: celery -A tasks worker --loglevel=info --concurrency=4
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DATABASE_URL: postgresql+asyncpg://voiceai:voiceai@postgres:5432/voiceai
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./workers:/app
+
+  celery-beat:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile
+    container_name: voiceai-celery-beat
+    command: celery -A tasks beat --loglevel=info
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      - redis
+      - postgres
+
+  # ============================================================================
+  # Observability Services
+  # ============================================================================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: voiceai-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: voiceai-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-clock-panel
+    volumes:
+      - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  otel-collector:
+    image: otel/opentelemetry-collector:latest
+    container_name: voiceai-otel
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+      - "8888:8888"  # Prometheus metrics
+
+  # ============================================================================
+  # Web Client (Demo)
+  # ============================================================================
+
+  web-client:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: voiceai-web
+    ports:
+      - "3001:80"
+    depends_on:
+      - gateway
+    volumes:
+      - ./web:/usr/share/nginx/html
+
+# ============================================================================
+# Volumes
+# ============================================================================
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  clickhouse_data:
+  prometheus_data:
+  grafana_data:
+  model_cache:
+
+# ============================================================================
+# Networks
+# ============================================================================
+
+networks:
+  default:
+    name: voiceai-network
+    driver: bridge

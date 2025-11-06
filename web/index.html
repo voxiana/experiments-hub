@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice AI CX - Demo Client</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 800px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 1.1em;
+        }
+
+        .status {
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .status.disconnected {
+            background: #fee;
+            color: #c33;
+        }
+
+        .status.connected {
+            background: #efe;
+            color: #3c3;
+        }
+
+        .status.active {
+            background: #ffc;
+            color: #960;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            justify-content: center;
+        }
+
+        button {
+            padding: 15px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.1em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-danger {
+            background: #f56565;
+            color: white;
+        }
+
+        .transcript {
+            background: #f7fafc;
+            border-radius: 10px;
+            padding: 20px;
+            min-height: 300px;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 12px;
+            border-radius: 8px;
+            animation: fadeIn 0.3s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.user {
+            background: #e6f7ff;
+            border-left: 4px solid #1890ff;
+        }
+
+        .message.assistant {
+            background: #f6ffed;
+            border-left: 4px solid #52c41a;
+        }
+
+        .message.interim {
+            background: #fff7e6;
+            border-left: 4px solid #faad14;
+            font-style: italic;
+            opacity: 0.8;
+        }
+
+        .message .role {
+            font-weight: bold;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            font-size: 0.85em;
+        }
+
+        .message .text {
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .message .timestamp {
+            font-size: 0.8em;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .metric {
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .metric .label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .metric .value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .audio-visualizer {
+            width: 100%;
+            height: 60px;
+            background: #f7fafc;
+            border-radius: 8px;
+            margin: 20px 0;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .wave {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            opacity: 0.3;
+            transform-origin: bottom;
+            animation: wave 1s ease-in-out infinite;
+        }
+
+        @keyframes wave {
+            0%, 100% { transform: scaleY(0.3); }
+            50% { transform: scaleY(0.8); }
+        }
+
+        .language-selector {
+            margin-bottom: 20px;
+        }
+
+        select {
+            padding: 10px;
+            border-radius: 8px;
+            border: 2px solid #e2e8f0;
+            font-size: 1em;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎤 Voice AI CX</h1>
+            <p>Real-time Voice Customer Care Platform</p>
+        </div>
+
+        <div id="status" class="status disconnected">
+            Disconnected
+        </div>
+
+        <div class="language-selector">
+            <label for="language">Language:</label>
+            <select id="language">
+                <option value="auto">Auto-detect</option>
+                <option value="ar">Arabic (العربية)</option>
+                <option value="en" selected>English</option>
+            </select>
+        </div>
+
+        <div class="controls">
+            <button id="startBtn" class="btn-primary" onclick="startCall()">
+                🎙️ Start Call
+            </button>
+            <button id="endBtn" class="btn-danger" onclick="endCall()" disabled>
+                ⏹️ End Call
+            </button>
+        </div>
+
+        <div class="audio-visualizer" id="visualizer" style="display: none;">
+            <div class="wave"></div>
+        </div>
+
+        <div class="transcript" id="transcript">
+            <p style="color: #999; text-align: center;">
+                Click "Start Call" to begin your conversation
+            </p>
+        </div>
+
+        <div class="metrics">
+            <div class="metric">
+                <div class="label">Duration</div>
+                <div class="value" id="duration">0:00</div>
+            </div>
+            <div class="metric">
+                <div class="label">Turns</div>
+                <div class="value" id="turns">0</div>
+            </div>
+            <div class="metric">
+                <div class="label">Latency</div>
+                <div class="value" id="latency">-</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let ws = null;
+        let mediaRecorder = null;
+        let audioContext = null;
+        let callId = null;
+        let startTime = null;
+        let turnCount = 0;
+        let isRecording = false;
+        let currentAudio = null;
+
+        // Update status display
+        function updateStatus(status, text) {
+            const statusEl = document.getElementById('status');
+            statusEl.className = `status ${status}`;
+            statusEl.textContent = text;
+        }
+
+        // Add message to transcript
+        function addMessage(role, text, interim = false) {
+            const transcript = document.getElementById('transcript');
+
+            // Remove previous interim message if exists
+            if (interim) {
+                const prevInterim = transcript.querySelector('.message.interim');
+                if (prevInterim) prevInterim.remove();
+            }
+
+            const message = document.createElement('div');
+            message.className = `message ${interim ? 'interim' : role}`;
+            message.innerHTML = `
+                <div class="role">${role === 'user' ? '👤 You' : '🤖 Assistant'}</div>
+                <div class="text">${text}</div>
+                <div class="timestamp">${new Date().toLocaleTimeString()}</div>
+            `;
+
+            transcript.appendChild(message);
+            transcript.scrollTop = transcript.scrollHeight;
+
+            if (!interim) {
+                turnCount++;
+                document.getElementById('turns').textContent = turnCount;
+            }
+        }
+
+        // Update duration timer
+        function updateDuration() {
+            if (!startTime) return;
+
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            document.getElementById('duration').textContent =
+                `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        // Start call
+        async function startCall() {
+            try {
+                // Request microphone access
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                // Initialize audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+                // Get JWT token (in production, implement proper auth)
+                const token = await getAuthToken();
+
+                // Create call session
+                const response = await fetch('http://localhost:8000/call/start', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({
+                        tenant_id: 'demo',
+                        language: document.getElementById('language').value,
+                        voice_id: 'arabic_gulf_male',
+                        metadata: { source: 'web_demo' },
+                    }),
+                });
+
+                const data = await response.json();
+                callId = data.call_id;
+
+                // Connect WebSocket
+                ws = new WebSocket(`ws://localhost:8000/ws/${callId}`);
+
+                ws.onopen = () => {
+                    updateStatus('connected', 'Connected - Listening...');
+                    document.getElementById('startBtn').disabled = true;
+                    document.getElementById('endBtn').disabled = false;
+                    document.getElementById('visualizer').style.display = 'block';
+
+                    // Clear transcript
+                    document.getElementById('transcript').innerHTML = '';
+
+                    // Start recording
+                    startRecording(stream);
+
+                    // Start duration timer
+                    startTime = Date.now();
+                    setInterval(updateDuration, 1000);
+                };
+
+                ws.onmessage = (event) => {
+                    const message = JSON.parse(event.data);
+                    handleServerMessage(message);
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    updateStatus('disconnected', 'Connection error');
+                };
+
+                ws.onclose = () => {
+                    updateStatus('disconnected', 'Disconnected');
+                    stopRecording();
+                };
+
+            } catch (error) {
+                console.error('Error starting call:', error);
+                alert('Failed to start call: ' + error.message);
+            }
+        }
+
+        // End call
+        async function endCall() {
+            if (ws) {
+                ws.close();
+            }
+
+            stopRecording();
+
+            // Call end endpoint
+            const token = await getAuthToken();
+            await fetch(`http://localhost:8000/call/${callId}/end`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('endBtn').disabled = true;
+            document.getElementById('visualizer').style.display = 'none';
+
+            startTime = null;
+        }
+
+        // Start recording
+        function startRecording(stream) {
+            mediaRecorder = new MediaRecorder(stream, {
+                mimeType: 'audio/webm',
+            });
+
+            mediaRecorder.ondataavailable = async (event) => {
+                if (event.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
+                    // Convert to base64 and send
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        const base64 = reader.result.split(',')[1];
+                        ws.send(JSON.stringify({
+                            type: 'audio',
+                            data: base64,
+                        }));
+                    };
+                    reader.readAsDataURL(event.data);
+                }
+            };
+
+            // Send chunks every 250ms
+            mediaRecorder.start(250);
+            isRecording = true;
+        }
+
+        // Stop recording
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                isRecording = false;
+            }
+        }
+
+        // Handle server messages
+        function handleServerMessage(message) {
+            const startLatency = Date.now();
+
+            switch (message.type) {
+                case 'transcript_interim':
+                    addMessage('user', message.text, true);
+                    break;
+
+                case 'transcript_final':
+                    addMessage('user', message.text, false);
+                    updateStatus('active', 'Processing...');
+                    break;
+
+                case 'response':
+                    addMessage('assistant', message.text, false);
+                    updateStatus('connected', 'Listening...');
+
+                    // Play TTS audio if provided
+                    if (message.audio) {
+                        playAudio(message.audio);
+                    }
+
+                    // Update latency
+                    const latency = Date.now() - startLatency;
+                    document.getElementById('latency').textContent = `${latency}ms`;
+                    break;
+
+                case 'error':
+                    console.error('Server error:', message.error);
+                    updateStatus('disconnected', `Error: ${message.error}`);
+                    break;
+
+                case 'pong':
+                    // Keepalive response
+                    break;
+            }
+        }
+
+        // Play TTS audio
+        function playAudio(base64Audio) {
+            // Stop current audio if playing
+            if (currentAudio && !currentAudio.paused) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0;
+            }
+
+            const audio = new Audio(`data:audio/wav;base64,${base64Audio}`);
+            currentAudio = audio;
+
+            audio.play().catch(error => {
+                console.error('Audio playback error:', error);
+            });
+
+            // Detect barge-in (user speaks while bot is talking)
+            audio.onplay = () => {
+                // TODO: Implement VAD-based barge-in detection
+                // When user starts speaking, pause audio and send barge_in event
+            };
+        }
+
+        // Get auth token (stub - implement proper auth)
+        async function getAuthToken() {
+            const response = await fetch('http://localhost:8000/auth/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'tenant_id=demo&api_key=demo_key',
+            });
+
+            const data = await response.json();
+            return data.access_token;
+        }
+
+        // Keepalive ping every 30 seconds
+        setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping' }));
+            }
+        }, 30000);
+    </script>
+</body>
+</html>
