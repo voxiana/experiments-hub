@@ -1,0 +1,75 @@
+# ASR Service - Python Dependencies
+# Python 3.10+
+
+# ============================================================================
+# Core Framework
+# ============================================================================
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
+
+# ============================================================================
+# ASR & Audio Processing
+# ============================================================================
+
+# Whisper (faster-whisper implementation)
+faster-whisper==0.10.0
+ctranslate2==3.24.0
+
+# PyTorch (for VAD and audio processing)
+torch==2.1.1
+torchaudio==2.1.1
+
+# Audio processing
+soundfile==0.12.1
+librosa==0.10.1
+numpy==1.26.2
+
+# Resampling
+scipy==1.11.4
+
+# ============================================================================
+# VAD (Voice Activity Detection)
+# ============================================================================
+
+# Silero VAD (install from GitHub if not on PyPI)
+# torch (already included above)
+# Install: pip install git+https://github.com/snakers4/silero-vad.git
+# Or use onnxruntime for ONNX version:
+onnxruntime==1.16.3
+onnxruntime-gpu==1.16.3  # If using GPU for VAD
+
+# ============================================================================
+# gRPC (for production service)
+# ============================================================================
+grpcio==1.60.0
+grpcio-tools==1.60.0
+protobuf==4.25.1
+
+# ============================================================================
+# Async & Networking
+# ============================================================================
+aiohttp==3.9.0
+websockets==12.0
+
+# ============================================================================
+# Observability
+# ============================================================================
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-instrumentation-fastapi==0.42b0
+prometheus-client==0.19.0
+
+# ============================================================================
+# Utilities
+# ============================================================================
+python-dotenv==1.0.0
+pyyaml==6.0.1
+
+# ============================================================================
+# Testing (optional)
+# ============================================================================
+# pytest==7.4.3
+# pytest-asyncio==0.21.1
+# httpx==0.25.2
