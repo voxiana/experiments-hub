@@ -1,10 +1,10 @@
-# ASR Service Dockerfile
-# Multi-stage build for optimized image size
+# ASR Service Dockerfile (CPU-Only)
+# For systems without GPU support
 
 # ============================================================================
 # Stage 1: Builder
 # ============================================================================
-FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04 as builder
+FROM ubuntu:22.04 as builder
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -35,25 +35,15 @@ RUN python3.10 -m pip install --upgrade pip setuptools wheel
 RUN python3.10 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Set pip timeout and retry for large packages
+# Set pip timeout
 ENV PIP_DEFAULT_TIMEOUT=100
 
 # Copy requirements and install
 WORKDIR /app
-COPY requirements.txt .
+COPY requirements-cpu.txt .
 
-# Install PyTorch first with CUDA 12.1 support
-RUN pip install --no-cache-dir \
-    torch==2.1.1+cu121 \
-    torchaudio==2.1.1+cu121 \
-    --index-url https://download.pytorch.org/whl/cu121
-
-# Install remaining dependencies (excluding PyTorch lines)
-RUN grep -v "^torch" requirements.txt | \
-    grep -v "^--index-url" | \
-    grep -v "^#" | \
-    grep -v "^$" > requirements_filtered.txt && \
-    pip install --no-cache-dir -r requirements_filtered.txt
+# Install CPU dependencies
+RUN pip install --no-cache-dir -r requirements-cpu.txt
 
 # Install Silero VAD from git
 RUN pip install --no-cache-dir git+https://github.com/snakers4/silero-vad.git
@@ -61,7 +51,7 @@ RUN pip install --no-cache-dir git+https://github.com/snakers4/silero-vad.git
 # ============================================================================
 # Stage 2: Runtime
 # ============================================================================
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM ubuntu:22.04
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -99,10 +89,10 @@ ENV HF_HOME=/root/.cache/huggingface
 ENV TORCH_HOME=/root/.cache/torch
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
 
-# Set default model config
-ENV WHISPER_MODEL=large-v3
-ENV DEVICE=cuda
-ENV COMPUTE_TYPE=float16
+# Set default model config (CPU)
+ENV WHISPER_MODEL=medium
+ENV DEVICE=cpu
+ENV COMPUTE_TYPE=int8
 
 # Expose ports
 EXPOSE 50051 8050
@@ -112,4 +102,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8050/health || exit 1
 
 # Default command
-CMD ["python3.10", "run.py"]
+CMD ["python3.10", "run.py", "--device", "cpu", "--model", "medium"]

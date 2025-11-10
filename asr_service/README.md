@@ -18,20 +18,44 @@ Standalone ASR (Automatic Speech Recognition) service using **faster-whisper** (
 
 ### 1. Install Dependencies
 
+**For GPU systems with CUDA 12.1:**
 ```bash
 # Install system dependencies (Ubuntu/Debian)
 sudo apt-get update
 sudo apt-get install -y \
     python3.10 \
+    python3.10-venv \
     libsndfile1 \
     ffmpeg
 
-# Install Python dependencies
+# Install Python dependencies with CUDA support
 pip install -r requirements.txt
 
 # Install Silero VAD
 pip install git+https://github.com/snakers4/silero-vad.git
 ```
+
+**For CPU-only systems:**
+```bash
+# Install system dependencies
+sudo apt-get update
+sudo apt-get install -y \
+    python3.10 \
+    python3.10-venv \
+    libsndfile1 \
+    ffmpeg
+
+# Install CPU-only dependencies (smaller, no CUDA)
+pip install -r requirements-cpu.txt
+
+# Install Silero VAD
+pip install git+https://github.com/snakers4/silero-vad.git
+```
+
+**Important Notes:**
+- `requirements.txt` installs PyTorch with CUDA 12.1 support (~2.5GB download)
+- `requirements-cpu.txt` installs CPU-only PyTorch (~200MB download)
+- The files handle dependency conflicts automatically (no onnxruntime conflicts)
 
 ### 2. Run the Service
 
@@ -71,15 +95,28 @@ curl -F "file=@audio_ar.wav" -F "language=ar" http://localhost:8050/transcribe
 
 ### Build Image
 
+**GPU Version (recommended for production):**
 ```bash
-# Build Docker image
-docker build -t voiceai-asr:latest .
+# Using build script
+./build.sh gpu latest
+
+# Or manually
+docker build -f Dockerfile -t voiceai-asr:latest .
+```
+
+**CPU Version (no GPU required):**
+```bash
+# Using build script
+./build.sh cpu latest
+
+# Or manually
+docker build -f Dockerfile.cpu -t voiceai-asr:cpu-latest .
 ```
 
 ### Run Container (GPU)
 
 ```bash
-# Run with GPU support
+# Run with GPU support (default: large-v3)
 docker run --gpus all \
   -p 8050:8050 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
@@ -89,16 +126,28 @@ docker run --gpus all \
 docker run --gpus '"device=0"' \
   -p 8050:8050 \
   voiceai-asr:latest
+
+# Run with smaller model (faster)
+docker run --gpus all \
+  -p 8050:8050 \
+  -e WHISPER_MODEL=medium \
+  voiceai-asr:latest
 ```
 
 ### Run Container (CPU)
 
 ```bash
+# CPU version with optimized settings
 docker run \
   -p 8050:8050 \
-  -e WHISPER_MODEL=medium \
-  -e DEVICE=cpu \
-  voiceai-asr:latest
+  voiceai-asr:cpu-latest
+
+# CPU with custom model
+docker run \
+  -p 8050:8050 \
+  -e WHISPER_MODEL=small \
+  -e COMPUTE_TYPE=int8 \
+  voiceai-asr:cpu-latest
 ```
 
 ---
@@ -373,11 +422,32 @@ python run.py --device cpu --compute-type int8
 
 ## Troubleshooting
 
+### Dependency Conflicts (Fixed)
+
+**Problem**: Docker build fails with package conflicts
+
+**Solution**: The updated files fix these issues:
+- ✅ Removed duplicate `onnxruntime` and `onnxruntime-gpu` (use only `-gpu` version)
+- ✅ PyTorch now installs with explicit CUDA 12.1 support
+- ✅ Added `python3.10-venv` package to Dockerfile
+- ✅ Changed builder stage to use `-devel` image (has build tools)
+
+**Files Updated**:
+- `requirements.txt` - GPU version with CUDA 12.1 PyTorch
+- `requirements-cpu.txt` - CPU-only version (no CUDA)
+- `Dockerfile` - Fixed for GPU builds
+- `Dockerfile.cpu` - Added for CPU-only builds
+
 ### GPU Not Detected
 
 ```bash
 # Check CUDA installation
 python -c "import torch; print(torch.cuda.is_available())"
+python -c "import torch; print(torch.version.cuda)"
+
+# Should output:
+# True
+# 12.1
 
 # Install CUDA toolkit
 # See: https://developer.nvidia.com/cuda-downloads

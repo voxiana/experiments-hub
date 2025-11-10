@@ -1,5 +1,6 @@
-# ASR Service - Python Dependencies
+# ASR Service - Python Dependencies (CPU Only)
 # Python 3.10+
+# Use this for CPU-only installations
 
 # ============================================================================
 # Core Framework
@@ -10,12 +11,10 @@ pydantic==2.5.0
 python-multipart==0.0.6
 
 # ============================================================================
-# PyTorch (install BEFORE other packages to avoid conflicts)
+# PyTorch (CPU version)
 # ============================================================================
-# For CUDA 12.1 support
---index-url https://download.pytorch.org/whl/cu121
-torch==2.1.1+cu121
-torchaudio==2.1.1+cu121
+torch==2.1.1
+torchaudio==2.1.1
 
 # ============================================================================
 # ASR & Audio Processing
@@ -33,8 +32,8 @@ scipy==1.11.4
 # ============================================================================
 # VAD (Voice Activity Detection)
 # ============================================================================
-# Use onnxruntime-gpu ONLY (includes CPU support, conflicts with onnxruntime)
-onnxruntime-gpu==1.16.3
+# CPU-only ONNX runtime
+onnxruntime==1.16.3
 
 # Note: Silero VAD will be installed separately from GitHub
 
