@@ -1,5 +1,6 @@
 # ASR Service - Python Dependencies
 # Python 3.10+
+# For CUDA 12.4 with cuDNN 9 (required by faster-whisper/CTranslate2)
 
 # ============================================================================
 # Core Framework
@@ -12,16 +13,17 @@ python-multipart==0.0.6
 # ============================================================================
 # PyTorch (install BEFORE other packages to avoid conflicts)
 # ============================================================================
-# For CUDA 12.1 support
---index-url https://download.pytorch.org/whl/cu121
-torch==2.1.1+cu121
-torchaudio==2.1.1+cu121
+# For CUDA 12.4 support (cuDNN 9)
+--index-url https://download.pytorch.org/whl/cu124
+torch==2.2.0+cu124
+torchaudio==2.2.0+cu124
 
 # ============================================================================
 # ASR & Audio Processing
 # ============================================================================
 
 # Whisper (faster-whisper implementation)
+# Note: Requires cuDNN 9 (not cuDNN 8)
 faster-whisper==0.10.0
 
 # Audio processing

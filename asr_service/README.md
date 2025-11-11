@@ -7,10 +7,22 @@ Standalone ASR (Automatic Speech Recognition) service using **faster-whisper** (
 - ✅ **Streaming ASR**: Real-time transcription with 250ms chunks
 - ✅ **Voice Activity Detection**: Silero VAD for turn segmentation
 - ✅ **Multilingual**: Arabic, English, and 90+ languages
-- ✅ **GPU Accelerated**: Optimized with CTranslate2
+- ✅ **GPU Accelerated**: Optimized with CTranslate2 (requires cuDNN 9)
 - ✅ **WebSocket Support**: Real-time bidirectional streaming
 - ✅ **REST API**: File upload and base64 transcription
 - ✅ **Batch Processing**: Process complete audio files
+
+## ⚠️ Important: cuDNN 9 Required
+
+**faster-whisper** requires **cuDNN 9** (not cuDNN 8). The Dockerfile has been updated to use CUDA 12.4 with cuDNN 9.
+
+If you get this error:
+```
+Unable to load any of {libcudnn_ops.so.9.1.0, ...}
+Invalid handle. Cannot load symbol cudnnCreateTensorDescriptor
+```
+
+See **[CUDNN_ERROR_FIX.md](CUDNN_ERROR_FIX.md)** for the complete solution.
 
 ---
 

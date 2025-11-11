@@ -1,10 +1,11 @@
 # ASR Service Dockerfile
 # Multi-stage build for optimized image size
+# Using CUDA 12.4 with cuDNN 9 (required by faster-whisper/CTranslate2)
 
 # ============================================================================
 # Stage 1: Builder
 # ============================================================================
-FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04 as builder
+FROM nvidia/cuda:12.4.0-cudnn9-devel-ubuntu22.04 as builder
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -42,11 +43,12 @@ ENV PIP_DEFAULT_TIMEOUT=100
 WORKDIR /app
 COPY requirements.txt .
 
-# Install PyTorch first with CUDA 12.1 support
+# Install PyTorch first with CUDA 12.4 support
+# Note: Using cu124 wheels
 RUN pip install --no-cache-dir \
-    torch==2.1.1+cu121 \
-    torchaudio==2.1.1+cu121 \
-    --index-url https://download.pytorch.org/whl/cu121
+    torch==2.2.0 \
+    torchaudio==2.2.0 \
+    --index-url https://download.pytorch.org/whl/cu124
 
 # Install remaining dependencies (excluding PyTorch lines)
 RUN grep -v "^torch" requirements.txt | \
@@ -61,7 +63,7 @@ RUN pip install --no-cache-dir git+https://github.com/snakers4/silero-vad.git
 # ============================================================================
 # Stage 2: Runtime
 # ============================================================================
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.0-cudnn9-runtime-ubuntu22.04
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -103,6 +105,10 @@ ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
 ENV WHISPER_MODEL=large-v3
 ENV DEVICE=cuda
 ENV COMPUTE_TYPE=float16
+
+# Set cuDNN environment variables (helps with library loading)
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV CUDA_MODULE_LOADING=LAZY
 
 # Expose ports
 EXPOSE 50051 8050
