@@ -14,7 +14,7 @@ TAG="${2:-latest}"
 if [ "$BUILD_TYPE" = "gpu" ]; then
     echo "Building GPU-enabled image..."
     echo "- Dockerfile: Dockerfile"
-    echo "- Requirements: requirements.txt (CUDA 12.1 + PyTorch)"
+    echo "- Requirements: requirements.txt (CUDA 12.4 + cuDNN 9 + PyTorch)"
     echo ""
 
     docker build \

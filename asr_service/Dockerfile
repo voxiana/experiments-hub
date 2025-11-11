@@ -87,6 +87,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Copy complete cuDNN libraries from builder (devel has all libs, runtime is minimal)
+# This includes libcudnn_ops.so.9.x and other operation libraries required by CTranslate2
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libcudnn* /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/include/cudnn* /usr/include/
+RUN ldconfig
+
 # Copy application code
 COPY server.py .
 COPY run.py .
@@ -107,7 +113,7 @@ ENV DEVICE=cuda
 ENV COMPUTE_TYPE=float16
 
 # Set cuDNN environment variables (helps with library loading)
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 ENV CUDA_MODULE_LOADING=LAZY
 
 # Expose ports
