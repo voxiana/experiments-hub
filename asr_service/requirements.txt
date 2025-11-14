@@ -13,16 +13,16 @@ python-multipart==0.0.6
 # PyTorch (install BEFORE other packages to avoid conflicts)
 # ============================================================================
 # For CUDA 12.1 support
---index-url https://download.pytorch.org/whl/cu121
-torch==2.1.1+cu121
-torchaudio==2.1.1+cu121
+--index-url https://download.pytorch.org/whl/cu124
+torch==2.2.0+cu124
+torchaudio==2.2.0+cu124
 
 # ============================================================================
 # ASR & Audio Processing
 # ============================================================================
 
 # Whisper (faster-whisper implementation)
-faster-whisper==0.10.0
+faster-whisper==1.2.1
 
 # Audio processing
 soundfile==0.12.1
@@ -34,7 +34,7 @@ scipy==1.11.4
 # VAD (Voice Activity Detection)
 # ============================================================================
 # Use onnxruntime-gpu ONLY (includes CPU support, conflicts with onnxruntime)
-onnxruntime-gpu==1.16.3
+# onnxruntime-gpu==1.23.2
 
 # Note: Silero VAD will be installed separately from GitHub
 

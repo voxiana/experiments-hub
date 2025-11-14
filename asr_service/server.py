@@ -4,6 +4,18 @@ Uses faster-whisper (large-v3) with silero-vad for voice activity detection
 Supports real-time streaming with low latency
 """
 
+import os
+
+# Set environment variables BEFORE importing torch/faster_whisper to prevent CUDA loading
+# This must happen before any CUDA-related imports
+_device = os.environ.get("DEVICE", "").lower()
+if _device == "cpu":
+    # Hide CUDA devices to prevent faster-whisper from trying to load CUDA/cuDNN libraries
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    # Suppress cuDNN warnings
+    os.environ["CUDNN_LOGINFO_DBG"] = "0"
+    os.environ["CUDNN_LOGDEST_DBG"] = ""
+
 import asyncio
 import base64
 import logging
@@ -27,10 +39,28 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================================
 
-# Model configuration
-WHISPER_MODEL = "large-v3"  # or "distil-large-v3" for lower latency
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
+# Model configuration - read from environment variables if set (from run.py)
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
+_requested_device = os.environ.get("DEVICE", "").lower()
+
+# Determine device: respect environment variable, fall back to auto-detection
+if _requested_device == "cpu":
+    DEVICE = "cpu"
+    COMPUTE_TYPE = os.environ.get("COMPUTE_TYPE", "int8")
+elif _requested_device == "cuda":
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    COMPUTE_TYPE = os.environ.get("COMPUTE_TYPE", "float16" if DEVICE == "cuda" else "int8")
+else:
+    # Auto-detect
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    COMPUTE_TYPE = os.environ.get("COMPUTE_TYPE", "float16" if DEVICE == "cuda" else "int8")
+
+# Force CPU if CUDA is requested but not available
+if DEVICE == "cuda" and not torch.cuda.is_available():
+    logger.warning("CUDA requested but not available. Falling back to CPU.")
+    DEVICE = "cpu"
+    COMPUTE_TYPE = "int8"
+
 BEAM_SIZE = 1  # Increase to 5 for higher accuracy, lower speed
 VAD_THRESHOLD = 0.5
 
@@ -113,17 +143,45 @@ class ASRService:
 
     def __init__(self):
         logger.info(f"Loading Whisper model: {WHISPER_MODEL}...")
-        self.model = WhisperModel(
-            WHISPER_MODEL,
-            device=DEVICE,
-            compute_type=COMPUTE_TYPE,
-            num_workers=4,
-        )
+        logger.info(f"   Device: {DEVICE}, Compute Type: {COMPUTE_TYPE}")
+        
+        # Try to initialize with specified device, fall back to CPU on error
+        device = DEVICE
+        compute_type = COMPUTE_TYPE
+        
+        try:
+            self.model = WhisperModel(
+                WHISPER_MODEL,
+                device=device,
+                compute_type=compute_type,
+                num_workers=4,
+            )
+            logger.info(f"✅ Whisper {WHISPER_MODEL} loaded on {device}")
+        except Exception as e:
+            error_msg = str(e).lower()
+            # Check if it's a CUDA/cuDNN related error
+            if device == "cuda" or "cuda" in error_msg or "cudnn" in error_msg:
+                logger.warning(f"Failed to load model on {device}: {e}")
+                logger.warning("Falling back to CPU...")
+                device = "cpu"
+                compute_type = "int8"
+                try:
+                    self.model = WhisperModel(
+                        WHISPER_MODEL,
+                        device=device,
+                        compute_type=compute_type,
+                        num_workers=4,
+                    )
+                    logger.info(f"✅ Whisper {WHISPER_MODEL} loaded on {device} (fallback)")
+                except Exception as e2:
+                    logger.error(f"Failed to load model on CPU: {e2}")
+                    raise
+            else:
+                logger.error(f"Failed to load model: {e}")
+                raise
 
         self.vad = VADService()
         self.executor = ThreadPoolExecutor(max_workers=4)
-
-        logger.info(f"✅ Whisper {WHISPER_MODEL} loaded on {DEVICE}")
 
     async def transcribe_streaming(
         self,

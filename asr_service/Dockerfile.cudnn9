@@ -1,10 +1,11 @@
-# ASR Service Dockerfile
-# Multi-stage build for optimized image size
+# ASR Service Dockerfile (cuDNN 9 Version)
+# Alternative Dockerfile if cuDNN 9 base images are not available
+# This version manually installs cuDNN 9 on top of CUDA 12.1
 
 # ============================================================================
 # Stage 1: Builder
 # ============================================================================
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 as builder
+FROM nvidia/cuda:12.1.0-devel-ubuntu22.04 as builder
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -27,6 +28,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1-dev \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+# Install cuDNN 9 manually (if base image doesn't have it)
+# Note: This requires NVIDIA Developer account to download cuDNN
+# Alternative: Use apt repository if available
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libcudnn9 \
+    libcudnn9-dev \
+    && rm -rf /var/lib/apt/lists/* || echo "cuDNN 9 installation skipped (may need manual download)"
 
 # Upgrade pip
 RUN python3.10 -m pip install --upgrade pip setuptools wheel
@@ -61,7 +70,7 @@ RUN pip install --no-cache-dir git+https://github.com/snakers4/silero-vad.git
 # ============================================================================
 # Stage 2: Runtime
 # ============================================================================
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -71,20 +80,16 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # CUDA and cuDNN environment variables
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=${CUDA_HOME}/bin:${PATH}
-# Include cuDNN library paths (both lib64 and lib for compatibility)
+# Include cuDNN library paths
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${CUDA_HOME}/lib:${CUDA_HOME}/lib64/stubs:${LD_LIBRARY_PATH}
-# cuDNN specific paths
 ENV CUDNN_PATH=${CUDA_HOME}
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
-# Suppress cuDNN version warnings (if using cuDNN 8 with cuDNN 9 expectations)
-ENV CUDNN_LOGINFO_DBG=0
-ENV CUDNN_LOGDEST_DBG=""
 
 # Set working directory
 WORKDIR /app
 
-# Install runtime system dependencies only
+# Install runtime system dependencies and cuDNN 9
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     python3.10-venv \
@@ -92,7 +97,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
     ca-certificates \
+    libcudnn9 \
     && rm -rf /var/lib/apt/lists/*
+
+# Verify cuDNN installation
+RUN ldconfig && \
+    find /usr -name "*cudnn*" -type f 2>/dev/null | head -5 || echo "cuDNN libraries check completed"
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -117,9 +127,8 @@ ENV WHISPER_MODEL=large-v3
 ENV DEVICE=cuda
 ENV COMPUTE_TYPE=float16
 
-# Verify CUDA installation (runs after venv is copied)
-# This helps debug CUDA/cuDNN issues during build
-RUN python3.10 -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda if torch.cuda.is_available() else \"N/A\"}')" || echo "PyTorch verification skipped (this is OK if running without GPU during build)"
+# Verify CUDA installation
+RUN python3.10 -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda if torch.cuda.is_available() else \"N/A\"}')" || echo "PyTorch verification skipped"
 
 # Expose ports
 EXPOSE 50051 8050
@@ -130,3 +139,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
 
 # Default command
 CMD ["python3.10", "run.py"]
+

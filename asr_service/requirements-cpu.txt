@@ -21,7 +21,7 @@ torchaudio==2.1.1
 # ============================================================================
 
 # Whisper (faster-whisper implementation)
-faster-whisper==0.10.0
+faster-whisper==1.2.1
 
 # Audio processing
 soundfile==0.12.1
