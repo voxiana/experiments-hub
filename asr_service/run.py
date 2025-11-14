@@ -113,33 +113,80 @@ async def startup_event():
     """Initialize ASR service on startup"""
     global asr_service
 
-    logger.info("🚀 Starting ASR service...")
+    logger.info("=" * 60)
+    logger.info("🚀 Starting ASR Service")
+    logger.info("=" * 60)
+    logger.info("Configuration:")
     logger.info(f"   Model: {args.model}")
     logger.info(f"   Device: {args.device}")
     logger.info(f"   Compute Type: {args.compute_type}")
+    logger.info(f"   Host: {args.host}")
+    logger.info(f"   Port: {args.port}")
+    logger.info("=" * 60)
 
     try:
+        # Check system info
+        logger.info("System Information:")
+        logger.info(f"   Python version: {sys.version.split()[0]}")
+        logger.info(f"   PyTorch version: {torch.__version__}")
+        logger.info(f"   CUDA available: {torch.cuda.is_available()}")
+
+        if torch.cuda.is_available():
+            logger.info(f"   CUDA version: {torch.version.cuda}")
+            logger.info(f"   cuDNN version: {torch.backends.cudnn.version()}")
+            logger.info(f"   GPU count: {torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                logger.info(f"   GPU {i}: {torch.cuda.get_device_name(i)}")
+                logger.info(f"      Memory: {props.total_memory / 1e9:.1f} GB")
+                logger.info(f"      Compute Capability: {props.major}.{props.minor}")
+
         # Initialize ASR service
+        logger.info("=" * 60)
+        logger.info("Initializing ASR service components...")
         import os
         os.environ['WHISPER_MODEL'] = args.model
         os.environ['DEVICE'] = args.device
         os.environ['COMPUTE_TYPE'] = args.compute_type
 
+        init_start = time.time()
         asr_service = ASRService()
+        init_time = time.time() - init_start
 
+        logger.info("=" * 60)
         logger.info("✅ ASR service initialized successfully!")
-        logger.info(f"   GPU Available: {torch.cuda.is_available()}")
-        if torch.cuda.is_available():
-            logger.info(f"   GPU Name: {torch.cuda.get_device_name(0)}")
-            logger.info(f"   GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        logger.info(f"   Initialization time: {init_time:.2f}s")
+        logger.info(f"   Ready to accept requests")
+        logger.info("=" * 60)
+        logger.info("Supported audio formats:")
+        logger.info("   - WAV (via soundfile)")
+        logger.info("   - MP3 (via librosa/ffmpeg)")
+        logger.info("   - M4A (via librosa/ffmpeg)")
+        logger.info("   - FLAC (via soundfile)")
+        logger.info("   - OGG (via soundfile)")
+        logger.info("   - AAC, WMA, OPUS (via librosa/ffmpeg)")
+        logger.info("=" * 60)
+
     except Exception as e:
-        logger.error(f"❌ Failed to initialize ASR service: {e}", exc_info=True)
+        logger.error("=" * 60)
+        logger.error("❌ Failed to initialize ASR service")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        logger.error("=" * 60)
+        logger.error("Full traceback:", exc_info=True)
         sys.exit(1)
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
+    logger.info("=" * 60)
     logger.info("Shutting down ASR service...")
+    logger.info("=" * 60)
+    if asr_service:
+        logger.info("Cleaning up ASR service resources...")
+        # Any cleanup if needed
+    logger.info("✅ Shutdown complete")
+    logger.info("=" * 60)
 
 # ============================================================================
 # Endpoints
@@ -182,34 +229,73 @@ async def transcribe_file(
     """
     Transcribe an audio file
 
-    Supported formats: WAV, MP3, FLAC, OGG, etc. (via soundfile/ffmpeg)
+    Supported formats: WAV, MP3, M4A, FLAC, OGG, and other formats (via librosa/ffmpeg)
 
     Example:
         curl -F "file=@audio.wav" http://localhost:8050/transcribe
-        curl -F "file=@audio.wav" -F "language=ar" http://localhost:8050/transcribe
+        curl -F "file=@audio.mp3" -F "language=ar" http://localhost:8050/transcribe
+        curl -F "file=@audio.m4a" http://localhost:8050/transcribe
     """
     if not asr_service:
+        logger.error("Transcription request received but ASR service not initialized")
         raise HTTPException(status_code=503, detail="ASR service not initialized")
 
+    logger.info("=" * 60)
+    logger.info("Received transcription request via HTTP")
+    logger.info(f"Filename: {file.filename}")
+    logger.info(f"Content-Type: {file.content_type}")
+    logger.info(f"Language: {language}")
+    logger.info(f"Task: {task}")
+
     try:
+        # Read file content
+        content = await file.read()
+        file_size_mb = len(content) / (1024 * 1024)
+        logger.info(f"File size: {file_size_mb:.2f} MB ({len(content)} bytes)")
+
+        # Detect file format from extension
+        file_ext = Path(file.filename).suffix.lower()
+        logger.info(f"File extension: {file_ext}")
+
+        # Validate supported formats (informational only, actual support depends on ffmpeg)
+        supported_formats = ['.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.opus']
+        if file_ext not in supported_formats:
+            logger.warning(f"File extension {file_ext} not in common supported formats: {supported_formats}")
+            logger.warning("Will attempt to process anyway via librosa/ffmpeg")
+
         # Save uploaded file temporarily
         import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as tmp:
-            content = await file.read()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
             tmp.write(content)
             tmp_path = tmp.name
-
-        logger.info(f"Transcribing file: {file.filename} ({len(content)} bytes)")
+            logger.info(f"Saved temporary file: {tmp_path}")
 
         # Transcribe
+        logger.info("Calling ASR service for transcription...")
+        transcription_start = time.time()
+
         result = await asr_service.transcribe_file(
             tmp_path,
             language=language if language != "auto" else None,
         )
 
+        transcription_time = time.time() - transcription_start
+
         # Cleanup
         import os
         os.unlink(tmp_path)
+        logger.info(f"Cleaned up temporary file: {tmp_path}")
+
+        # Log results
+        logger.info("=" * 60)
+        logger.info("Transcription successful!")
+        logger.info(f"   Language: {result['language']} (confidence: {result['language_probability']:.2%})")
+        logger.info(f"   Duration: {result['duration']:.2f}s")
+        logger.info(f"   Segments: {len(result['segments'])}")
+        logger.info(f"   Total time: {transcription_time:.2f}s")
+        logger.info(f"   Text length: {len(result['text'])} characters")
+        logger.info(f"   Text preview: '{result['text'][:100]}...'")
+        logger.info("=" * 60)
 
         return TranscribeResponse(
             text=result["text"],
@@ -221,7 +307,12 @@ async def transcribe_file(
         )
 
     except Exception as e:
-        logger.error(f"Transcription failed: {e}", exc_info=True)
+        logger.error("=" * 60)
+        logger.error(f"Transcription failed for file: {file.filename}")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        logger.error("=" * 60)
+        logger.error("Full traceback:", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/transcribe/base64", response_model=TranscribeResponse)
@@ -237,29 +328,51 @@ async def transcribe_base64(request: TranscribeRequest):
         }
     """
     if not asr_service:
+        logger.error("Base64 transcription request received but ASR service not initialized")
         raise HTTPException(status_code=503, detail="ASR service not initialized")
+
+    logger.info("=" * 60)
+    logger.info("Received base64 transcription request")
+    logger.info(f"Language: {request.language}")
+    logger.info(f"Task: {request.task}")
+    logger.info(f"Base64 length: {len(request.audio_base64)} characters")
 
     try:
         # Decode base64 audio
+        logger.info("Decoding base64 audio...")
         audio_bytes = base64.b64decode(request.audio_base64)
+        logger.info(f"Decoded audio size: {len(audio_bytes)} bytes")
 
         # Try to parse as WAV first, otherwise assume PCM
+        audio_format = None
         try:
+            logger.info("Attempting to parse as WAV file...")
             audio, sr = sf.read(io.BytesIO(audio_bytes))
-        except Exception:
+            audio_format = "WAV"
+            logger.info(f"✅ Successfully parsed as WAV (sr={sr} Hz)")
+        except Exception as e:
+            logger.info(f"Not a WAV file ({e}), assuming raw PCM...")
             # Assume raw PCM 16-bit mono 16kHz
             audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
             audio = audio_int16.astype(np.float32) / 32768.0
             sr = 16000
+            audio_format = "PCM"
+            logger.info(f"✅ Parsed as raw PCM (assuming 16kHz)")
+
+        duration = len(audio) / sr
+        logger.info(f"Audio info: format={audio_format}, sr={sr} Hz, duration={duration:.2f}s, samples={len(audio)}")
 
         # Resample if needed
         if sr != 16000:
+            logger.info(f"Resampling from {sr} Hz to 16000 Hz...")
             import librosa
             audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+            logger.info(f"✅ Resampling complete")
 
-        logger.info(f"Transcribing base64 audio ({len(audio)/16000:.1f}s)")
+        logger.info(f"Starting transcription of {len(audio)/16000:.1f}s audio...")
 
         # Transcribe
+        transcribe_start = time.time()
         result = await asyncio.get_event_loop().run_in_executor(
             asr_service.executor,
             asr_service._transcribe_chunk,
@@ -268,6 +381,15 @@ async def transcribe_base64(request: TranscribeRequest):
             request.task,
             True,  # final=True
         )
+        transcribe_time = time.time() - transcribe_start
+
+        logger.info("=" * 60)
+        logger.info("Base64 transcription successful!")
+        logger.info(f"   Language: {result['language']} (confidence: {result['language_probability']:.2%})")
+        logger.info(f"   Duration: {result['duration']:.2f}s")
+        logger.info(f"   Transcribe time: {transcribe_time:.2f}s")
+        logger.info(f"   Text preview: '{result['text'][:100]}...'")
+        logger.info("=" * 60)
 
         return TranscribeResponse(
             text=result["text"],
@@ -279,7 +401,12 @@ async def transcribe_base64(request: TranscribeRequest):
         )
 
     except Exception as e:
-        logger.error(f"Base64 transcription failed: {e}", exc_info=True)
+        logger.error("=" * 60)
+        logger.error(f"Base64 transcription failed")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        logger.error("=" * 60)
+        logger.error("Full traceback:", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/transcribe")
@@ -292,32 +419,48 @@ async def websocket_transcribe(websocket: WebSocket):
         Server → Client: {"type": "interim", "text": "...", "timestamp": 123}
         Server → Client: {"type": "final", "text": "...", "language": "en"}
     """
+    client_id = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "unknown"
+
     if not asr_service:
+        logger.error(f"WebSocket connection from {client_id} rejected: ASR service not initialized")
         await websocket.close(code=1011, reason="Service not initialized")
         return
 
     await websocket.accept()
-    logger.info("WebSocket client connected")
+    logger.info("=" * 60)
+    logger.info(f"WebSocket client connected: {client_id}")
+    logger.info("=" * 60)
 
     try:
         # Get initial config
+        logger.info("Waiting for configuration message...")
         config_msg = await websocket.receive_json()
         language = config_msg.get("language", "auto")
 
-        logger.info(f"Starting streaming transcription (language={language})")
+        logger.info(f"WebSocket configuration received:")
+        logger.info(f"   Language: {language}")
+        logger.info(f"Starting streaming transcription session...")
+
+        chunk_count = 0
+        result_count = 0
 
         # Create audio stream generator
         async def audio_generator():
+            nonlocal chunk_count
             while True:
                 try:
                     message = await websocket.receive_json()
                     if message.get("type") == "close":
+                        logger.info("Client sent close message")
                         break
 
                     audio_b64 = message.get("audio")
                     if audio_b64:
+                        chunk_count += 1
+                        logger.debug(f"WS: Received audio chunk #{chunk_count} ({len(audio_b64)} chars)")
                         yield audio_b64
                 except WebSocketDisconnect:
+                    logger.info("Client disconnected during stream")
                     break
 
         # Stream transcription
@@ -325,6 +468,12 @@ async def websocket_transcribe(websocket: WebSocket):
             audio_generator(),
             language=language if language != "auto" else None,
         ):
+            result_count += 1
+            result_type = result["type"]
+            text_preview = result["text"][:50] + "..." if len(result["text"]) > 50 else result["text"]
+
+            logger.info(f"WS: Sending {result_type} result #{result_count}: '{text_preview}'")
+
             await websocket.send_json({
                 "type": result["type"],
                 "text": result["text"],
@@ -332,12 +481,23 @@ async def websocket_transcribe(websocket: WebSocket):
                 "timestamp": result.get("timestamp"),
             })
 
-        logger.info("Streaming transcription completed")
+        logger.info("=" * 60)
+        logger.info(f"Streaming transcription completed for {client_id}")
+        logger.info(f"   Total chunks received: {chunk_count}")
+        logger.info(f"   Total results sent: {result_count}")
+        logger.info("=" * 60)
 
     except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
+        logger.info("=" * 60)
+        logger.info(f"WebSocket client disconnected: {client_id}")
+        logger.info("=" * 60)
     except Exception as e:
-        logger.error(f"WebSocket error: {e}", exc_info=True)
+        logger.error("=" * 60)
+        logger.error(f"WebSocket error for client {client_id}")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        logger.error("=" * 60)
+        logger.error("Full traceback:", exc_info=True)
         await websocket.close(code=1011, reason=str(e))
 
 # ============================================================================
