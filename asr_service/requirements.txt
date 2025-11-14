@@ -1,5 +1,6 @@
 # ASR Service - Python Dependencies
 # Python 3.10+
+# For CUDA 12.4 with cuDNN 9 (required by faster-whisper/CTranslate2)
 
 # ============================================================================
 # Core Framework
