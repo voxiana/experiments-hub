@@ -80,29 +80,46 @@ class VADService:
     """Voice Activity Detection using Silero VAD"""
 
     def __init__(self):
-        logger.info("Loading Silero VAD model...")
+        logger.info("=" * 60)
+        logger.info("Initializing VAD Service (Silero VAD)")
+        logger.info("=" * 60)
+        logger.info(f"Target device: {DEVICE}")
+        logger.info(f"VAD threshold: {VAD_THRESHOLD}")
+        logger.info(f"VAD frame size: {VAD_FRAME_SIZE} samples")
+
+        logger.info("Loading Silero VAD model from torch hub...")
+        start_time = time.time()
         self.model, self.utils = torch.hub.load(
             repo_or_dir='snakers4/silero-vad',
             model='silero_vad',
             force_reload=False,
             onnx=False,
         )
+        logger.info(f"Moving VAD model to {DEVICE}...")
         self.model.to(DEVICE)
         self.get_speech_timestamps = self.utils[0]
 
-        logger.info(f"✅ VAD model loaded on {DEVICE}")
+        elapsed = time.time() - start_time
+        logger.info(f"✅ VAD model loaded successfully in {elapsed:.2f}s")
+        logger.info(f"   Device: {DEVICE}")
+        logger.info("=" * 60)
 
     def is_speech(self, audio_chunk: np.ndarray) -> float:
         """
         Detect speech in audio chunk
         Returns: speech probability [0-1]
         """
+        original_size = len(audio_chunk)
+        logger.debug(f"VAD: Processing audio chunk of {original_size} samples")
+
         # Ensure correct shape and type
         if len(audio_chunk) != VAD_FRAME_SIZE:
             # Pad or trim
             if len(audio_chunk) < VAD_FRAME_SIZE:
+                logger.debug(f"VAD: Padding audio from {len(audio_chunk)} to {VAD_FRAME_SIZE} samples")
                 audio_chunk = np.pad(audio_chunk, (0, VAD_FRAME_SIZE - len(audio_chunk)))
             else:
+                logger.debug(f"VAD: Trimming audio from {len(audio_chunk)} to {VAD_FRAME_SIZE} samples")
                 audio_chunk = audio_chunk[:VAD_FRAME_SIZE]
 
         audio_tensor = torch.from_numpy(audio_chunk).float().to(DEVICE)
@@ -110,6 +127,7 @@ class VADService:
         with torch.no_grad():
             speech_prob = self.model(audio_tensor, SAMPLE_RATE).item()
 
+        logger.debug(f"VAD: Speech probability = {speech_prob:.3f}")
         return speech_prob
 
     def get_speech_segments(self, audio: np.ndarray) -> list:
@@ -117,6 +135,9 @@ class VADService:
         Get speech segments with timestamps
         Returns: [(start_sample, end_sample), ...]
         """
+        logger.info(f"VAD: Analyzing {len(audio)} samples ({len(audio)/SAMPLE_RATE:.2f}s) for speech segments")
+        start_time = time.time()
+
         audio_tensor = torch.from_numpy(audio).float()
 
         speech_timestamps = self.get_speech_timestamps(
@@ -129,6 +150,13 @@ class VADService:
         )
 
         segments = [(ts['start'], ts['end']) for ts in speech_timestamps]
+        elapsed = time.time() - start_time
+
+        logger.info(f"VAD: Found {len(segments)} speech segment(s) in {elapsed:.3f}s")
+        for i, (start, end) in enumerate(segments):
+            duration = (end - start) / SAMPLE_RATE
+            logger.info(f"   Segment {i+1}: {start/SAMPLE_RATE:.2f}s - {end/SAMPLE_RATE:.2f}s (duration: {duration:.2f}s)")
+
         return segments
 
 # ============================================================================
@@ -142,6 +170,15 @@ class ASRService:
     """
 
     def __init__(self):
+        logger.info("=" * 60)
+        logger.info("Initializing ASR Service (faster-whisper)")
+        logger.info("=" * 60)
+        logger.info(f"Model: {WHISPER_MODEL}")
+        logger.info(f"Device: {DEVICE}")
+        logger.info(f"Compute Type: {COMPUTE_TYPE}")
+        logger.info(f"Beam Size: {BEAM_SIZE}")
+        logger.info(f"Sample Rate: {SAMPLE_RATE} Hz")
+
         logger.info(f"Loading Whisper model: {WHISPER_MODEL}...")
         logger.info(f"   Device: {DEVICE}, Compute Type: {COMPUTE_TYPE}")
         
@@ -180,8 +217,18 @@ class ASRService:
                 logger.error(f"Failed to load model: {e}")
                 raise
 
+        logger.info("Initializing VAD service...")
         self.vad = VADService()
+
+        logger.info("Creating thread pool executor (max_workers=4)...")
         self.executor = ThreadPoolExecutor(max_workers=4)
+
+        logger.info("=" * 60)
+        logger.info(f"✅ ASR Service initialized successfully")
+        logger.info(f"   Model: {WHISPER_MODEL}")
+        logger.info(f"   Device: {DEVICE}")
+        logger.info(f"   Ready to accept requests")
+        logger.info("=" * 60)
 
     async def transcribe_streaming(
         self,
@@ -193,12 +240,22 @@ class ASRService:
         Streaming transcription
         Yields interim and final results
         """
+        logger.info("=" * 60)
+        logger.info("Starting streaming transcription session")
+        logger.info(f"Language: {language or 'auto-detect'}")
+        logger.info(f"Task: {task}")
+        logger.info(f"Silence threshold: 1.0s")
+        logger.info("=" * 60)
+
         buffer = np.array([], dtype=np.float32)
         utterance_buffer = []
         last_speech_time = time.time()
         silence_threshold = 1.0  # seconds
+        chunk_count = 0
 
         async for audio_chunk_b64 in audio_stream:
+            chunk_count += 1
+            logger.debug(f"Stream: Received chunk #{chunk_count}")
             # Decode base64 audio (PCM 16-bit mono 16kHz)
             audio_bytes = base64.b64decode(audio_chunk_b64)
             audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -215,9 +272,11 @@ class ASRService:
                 if speech_prob > VAD_THRESHOLD:
                     last_speech_time = time.time()
                     utterance_buffer.append(audio_float32)
+                    logger.debug(f"Stream: Speech detected (prob={speech_prob:.3f}), buffer size: {len(utterance_buffer)} chunks")
 
                     # Yield interim result if enough audio
                     if len(utterance_buffer) * len(audio_float32) > SAMPLE_RATE * 1.0:  # 1 second
+                        logger.info(f"Stream: Generating interim result ({len(utterance_buffer)} chunks, ~{len(utterance_buffer)*len(audio_float32)/SAMPLE_RATE:.1f}s)")
                         utterance = np.concatenate(utterance_buffer)
 
                         # Run transcription in thread pool
@@ -245,8 +304,11 @@ class ASRService:
             # Check for end of utterance (silence)
             silence_duration = time.time() - last_speech_time
             if silence_duration > silence_threshold and len(utterance_buffer) > 0:
+                logger.info(f"Stream: Silence detected ({silence_duration:.1f}s), generating final result...")
                 # Final transcription
                 utterance = np.concatenate(utterance_buffer)
+                utterance_duration = len(utterance) / SAMPLE_RATE
+                logger.info(f"Stream: Final utterance duration: {utterance_duration:.2f}s")
 
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
@@ -258,6 +320,8 @@ class ASRService:
                     True,  # final=True
                 )
 
+                logger.info(f"Stream: Final transcript: '{result['text'][:100]}...'")
+
                 yield {
                     "type": "final",
                     "text": result["text"],
@@ -267,6 +331,7 @@ class ASRService:
                 }
 
                 # Reset buffers
+                logger.debug("Stream: Resetting buffers for next utterance")
                 utterance_buffer = []
                 buffer = np.array([], dtype=np.float32)
 
@@ -327,23 +392,77 @@ class ASRService:
     async def transcribe_file(self, audio_path: str, language: str = None) -> dict:
         """
         Transcribe complete audio file (non-streaming)
+        Supports: WAV, MP3, M4A, FLAC, OGG, and other formats via librosa/ffmpeg
         """
+        logger.info("=" * 60)
+        logger.info("Transcribing audio file")
+        logger.info(f"File: {audio_path}")
+        logger.info(f"Language: {language or 'auto-detect'}")
+        logger.info("=" * 60)
+
         start_time = time.time()
 
-        # Load audio
-        import soundfile as sf
-        audio, sr = sf.read(audio_path, dtype='float32')
+        # Detect file format
+        import os
+        file_ext = os.path.splitext(audio_path)[1].lower()
+        logger.info(f"Detected file extension: {file_ext}")
+
+        # Load audio with fallback mechanism
+        # Try soundfile first (fast, supports WAV, FLAC, OGG)
+        # Fall back to librosa (supports MP3, M4A via ffmpeg)
+        audio = None
+        sr = None
+        load_method = None
+
+        try:
+            import soundfile as sf
+            logger.info(f"Attempting to load with soundfile...")
+            audio, sr = sf.read(audio_path, dtype='float32')
+            load_method = "soundfile"
+            logger.info(f"✅ Successfully loaded with soundfile")
+        except Exception as sf_error:
+            logger.warning(f"soundfile failed: {sf_error}")
+            logger.info(f"Falling back to librosa (supports more formats via ffmpeg)...")
+            try:
+                import librosa
+                audio, sr = librosa.load(audio_path, sr=None, mono=True)
+                load_method = "librosa"
+                logger.info(f"✅ Successfully loaded with librosa")
+            except Exception as librosa_error:
+                logger.error(f"librosa also failed: {librosa_error}")
+                raise Exception(
+                    f"Failed to load audio file with both soundfile and librosa. "
+                    f"Ensure ffmpeg is installed for MP3/M4A support. "
+                    f"soundfile error: {sf_error}, librosa error: {librosa_error}"
+                )
+
+        # Log audio info
+        duration = len(audio) / sr
+        logger.info(f"Audio loaded successfully:")
+        logger.info(f"   Method: {load_method}")
+        logger.info(f"   Sample rate: {sr} Hz")
+        logger.info(f"   Duration: {duration:.2f}s")
+        logger.info(f"   Samples: {len(audio)}")
+        logger.info(f"   Channels: {'mono' if audio.ndim == 1 else audio.shape[1]}")
 
         # Resample if needed
         if sr != SAMPLE_RATE:
+            logger.info(f"Resampling from {sr} Hz to {SAMPLE_RATE} Hz...")
+            resample_start = time.time()
             import librosa
             audio = librosa.resample(audio, orig_sr=sr, target_sr=SAMPLE_RATE)
+            resample_time = time.time() - resample_start
+            logger.info(f"✅ Resampling complete in {resample_time:.2f}s")
+            sr = SAMPLE_RATE
 
         # Detect language if auto
         if language == "auto":
+            logger.info("Language set to auto-detect")
             language = None
 
         # Transcribe
+        logger.info("Starting transcription...")
+        transcribe_start = time.time()
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             self.executor,
@@ -353,9 +472,26 @@ class ASRService:
             "transcribe",
             True,
         )
+        transcribe_time = time.time() - transcribe_start
+
+        total_time = time.time() - start_time
+        rtf = transcribe_time / duration  # Real-time factor
 
         result["file"] = audio_path
-        result["total_time"] = time.time() - start_time
+        result["file_format"] = file_ext
+        result["load_method"] = load_method
+        result["total_time"] = total_time
+        result["transcribe_time"] = transcribe_time
+        result["real_time_factor"] = rtf
+
+        logger.info("=" * 60)
+        logger.info("Transcription complete!")
+        logger.info(f"   Total time: {total_time:.2f}s")
+        logger.info(f"   Transcribe time: {transcribe_time:.2f}s")
+        logger.info(f"   Real-time factor: {rtf:.2f}x")
+        logger.info(f"   Language detected: {result['language']}")
+        logger.info(f"   Text preview: '{result['text'][:100]}...'")
+        logger.info("=" * 60)
 
         return result
 
