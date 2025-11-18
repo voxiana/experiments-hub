@@ -12,7 +12,7 @@ python-multipart==0.0.6
 # ============================================================================
 # Async & Networking
 # ============================================================================
-aiohttp==3.9.0
+aiohttp
 aioredis==2.0.1
 asyncpg==0.29.0
 websockets==12.0
@@ -28,7 +28,7 @@ psycopg2-binary==2.9.9
 clickhouse-driver==0.2.6
 
 # Qdrant
-qdrant-client==1.7.0
+qdrant-client
 
 # ============================================================================
 # AI Models
@@ -39,7 +39,7 @@ faster-whisper==0.10.0
 torch==2.1.1
 torchaudio==2.1.1
 soundfile==0.12.1
-librosa==0.10.1
+librosa
 
 # VAD
 silero-vad==4.0.0  # Or from git
@@ -55,7 +55,7 @@ TTS==0.20.0  # Coqui TTS
 
 # Embeddings & NLP
 sentence-transformers==2.2.2
-transformers==4.36.0
+transformers
 accelerate==0.25.0
 
 # ============================================================================
@@ -110,8 +110,8 @@ python-jose==3.3.0
 python-dotenv==1.0.0
 pyyaml==6.0.1
 httpx==0.25.2
-numpy==1.26.2
-pandas==2.1.4
+numpy
+pandas
 
 # ============================================================================
 # Testing (install with -r requirements-dev.txt)

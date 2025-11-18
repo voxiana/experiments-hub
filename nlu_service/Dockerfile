@@ -4,17 +4,9 @@ FROM python:3.10-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies including ffmpeg libraries for PyAV
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
-    pkg-config \
-    build-essential \
-    libavcodec-dev \
-    libavformat-dev \
-    libavdevice-dev \
-    libavutil-dev \
-    libswscale-dev \
-    libswresample-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Python environment
