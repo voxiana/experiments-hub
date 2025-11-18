@@ -127,6 +127,8 @@ docker build -f Dockerfile.cpu -t voiceai-asr:cpu-latest .
 
 ### Run Container (GPU)
 
+**Important**: Always use `--gpus all` to enable CUDA/cuDNN support in the container.
+
 ```bash
 # Run with GPU support (default: large-v3)
 docker run --gpus all \
@@ -144,7 +146,30 @@ docker run --gpus all \
   -p 8050:8050 \
   -e WHISPER_MODEL=medium \
   voiceai-asr:latest
+
+# Verify CUDA is working inside container
+docker run --gpus all --rm voiceai-asr:latest \
+  python3.10 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')"
 ```
+
+**Troubleshooting CUDA in Docker:**
+
+If you see cuDNN errors, verify:
+1. **NVIDIA Container Toolkit is installed** on the host:
+   ```bash
+   # Check if installed
+   docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
+   ```
+
+2. **GPU is accessible**:
+   ```bash
+   nvidia-smi  # Should show GPU info
+   ```
+
+3. **Container has GPU access**:
+   ```bash
+   docker run --gpus all --rm voiceai-asr:latest nvidia-smi
+   ```
 
 ### Run Container (CPU)
 
@@ -467,6 +492,57 @@ python -c "import torch; print(torch.version.cuda)"
 # Install NVIDIA Container Toolkit (Docker)
 # See: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
 ```
+
+### cuDNN 9 DLL Error
+
+**Error**: `Could not locate cudnn_ops64_9.dll` or `Unable to load any of {libcudnn_ops.so.9.1.0...}`
+
+**Cause**: faster-whisper requires cuDNN 9, but the system has cuDNN 8 or cuDNN 9 is not in the library path.
+
+**Solutions**:
+
+1. **Docker (Linux)**:
+   ```bash
+   # The Dockerfile now uses cuDNN 9 base images
+   # If build fails, try the alternative Dockerfile:
+   docker build -f Dockerfile.cudnn9 -t voiceai-asr:latest .
+   
+   # Or manually install cuDNN 9 in the container
+   ```
+
+2. **Windows (Local)**:
+   ```powershell
+   # Download cuDNN 9 from NVIDIA (requires developer account)
+   # https://developer.nvidia.com/cudnn
+   
+   # Extract and copy to CUDA directory:
+   # Copy bin/*.dll to C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin
+   # Copy lib/*.lib to C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\lib\x64
+   # Copy include/*.h to C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\include
+   
+   # Add to PATH:
+   $env:PATH += ";C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin"
+   ```
+
+3. **Fallback to CPU** (if cuDNN 9 unavailable):
+   ```bash
+   # Run with CPU mode
+   python run.py --device cpu --compute-type int8
+   
+   # Or in Docker:
+   docker run -e DEVICE=cpu -e COMPUTE_TYPE=int8 voiceai-asr:latest
+   ```
+
+4. **Verify cuDNN in Docker**:
+   ```bash
+   # Check cuDNN libraries
+   docker run --gpus all --rm voiceai-asr:latest \
+     find /usr/local/cuda -name "*cudnn*" -type f
+   
+   # Check library path
+   docker run --gpus all --rm voiceai-asr:latest \
+     echo $LD_LIBRARY_PATH
+   ```
 
 ### Out of Memory
 

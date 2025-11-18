@@ -36,7 +36,8 @@ import uvicorn
 # Add parent directory to path to import server module
 sys.path.insert(0, str(Path(__file__).parent))
 
-from server import ASRService, VADService
+# Note: ASRService is imported in startup_event() after setting environment variables
+# This prevents faster-whisper from loading CUDA/cuDNN when using CPU mode
 
 # ============================================================================
 # Configuration
@@ -49,7 +50,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Global service instance
-asr_service: Optional[ASRService] = None
+# Type will be set after import in startup_event
+asr_service = None
+
+# Global args - will be set in main() or can be parsed here
+args = None
 
 # ============================================================================
 # Request/Response Models
@@ -111,7 +116,11 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """Initialize ASR service on startup"""
-    global asr_service
+    global asr_service, args
+    
+    # Parse args if not already set (when imported directly by uvicorn)
+    if args is None:
+        args = parse_args()
 
     logger.info("=" * 60)
     logger.info("🚀 Starting ASR Service")
@@ -144,12 +153,22 @@ async def startup_event():
         # Initialize ASR service
         logger.info("=" * 60)
         logger.info("Initializing ASR service components...")
+        # IMPORTANT: Set environment variables BEFORE importing server module
+        # This prevents faster-whisper from trying to load CUDA/cuDNN when using CPU
         import os
         os.environ['WHISPER_MODEL'] = args.model
         os.environ['DEVICE'] = args.device
         os.environ['COMPUTE_TYPE'] = args.compute_type
 
         init_start = time.time()
+        
+        # Prevent CUDA loading when using CPU to avoid cuDNN errors
+        if args.device == "cpu":
+            os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
+        # Import server module AFTER setting environment variables
+        # This ensures faster-whisper sees the CPU-only configuration
+        from server import ASRService
         asr_service = ASRService()
         init_time = time.time() - init_start
 
@@ -195,6 +214,10 @@ async def shutdown_event():
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
+    global args
+    if args is None:
+        args = parse_args()
+    
     return HealthResponse(
         status="healthy" if asr_service else "initializing",
         model=args.model,
@@ -206,6 +229,10 @@ async def health_check():
 @app.get("/")
 async def root():
     """Root endpoint with service info"""
+    global args
+    if args is None:
+        args = parse_args()
+    
     return {
         "service": "ASR Service (Standalone)",
         "version": "1.0.0",

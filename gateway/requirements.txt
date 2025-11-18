@@ -1,0 +1,133 @@
+# Voice AI CX Platform - Python Dependencies
+# Python 3.10+
+
+# ============================================================================
+# Core Framework
+# ============================================================================
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
+
+# ============================================================================
+# Async & Networking
+# ============================================================================
+aiohttp==3.9.0
+aioredis==2.0.1
+asyncpg==0.29.0
+websockets==12.0
+
+# ============================================================================
+# Database
+# ============================================================================
+sqlalchemy[asyncio]==2.0.23
+alembic==1.12.1
+psycopg2-binary==2.9.9
+
+# ClickHouse
+clickhouse-driver==0.2.6
+
+# Qdrant
+qdrant-client==1.7.0
+
+# ============================================================================
+# AI Models
+# ============================================================================
+
+# ASR
+faster-whisper==0.10.0
+torch==2.1.1
+torchaudio==2.1.1
+soundfile==0.12.1
+librosa==0.10.1
+
+# VAD
+silero-vad==6.2.0
+
+# Diarization (not used in gateway - remove to avoid PyAV build issues)
+# pyannote.audio==3.1.1
+
+# Emotion (not used in gateway - remove to avoid PyAV build issues)
+# speechbrain==0.5.16
+
+# TTS
+TTS==0.20.0  # Coqui TTS
+
+# Embeddings & NLP
+sentence-transformers==2.2.2
+transformers==4.36.0
+accelerate==0.25.0
+
+# ============================================================================
+# Document Processing (RAG)
+# ============================================================================
+langchain==0.1.0
+langchain-community==0.0.10
+pypdf==3.17.1
+python-docx==1.1.0
+unstructured==0.11.2
+
+# Text Splitting
+tiktoken==0.5.2
+
+# ============================================================================
+# Workers & Background Tasks
+# ============================================================================
+celery==5.3.4
+redis==5.0.1
+
+# ============================================================================
+# Observability
+# ============================================================================
+
+# OpenTelemetry
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-instrumentation-fastapi==0.42b0
+opentelemetry-instrumentation-aiohttp-client==0.42b0
+opentelemetry-instrumentation-sqlalchemy==0.42b0
+opentelemetry-exporter-otlp==1.21.0
+
+# Prometheus
+prometheus-client==0.19.0
+
+# Langfuse
+langfuse==2.7.0
+
+# Sentry
+sentry-sdk[fastapi]==1.39.1
+
+# ============================================================================
+# Auth & Security
+# ============================================================================
+pyjwt[crypto]==2.8.0
+passlib[bcrypt]==1.7.4
+python-jose==3.3.0
+
+# ============================================================================
+# Utilities
+# ============================================================================
+python-dotenv==1.0.0
+pyyaml==6.0.1
+httpx==0.25.2
+numpy==1.26.2
+pandas==2.1.4
+
+# ============================================================================
+# Testing (install with -r requirements-dev.txt)
+# ============================================================================
+# pytest==7.4.3
+# pytest-asyncio==0.21.1
+# pytest-cov==4.1.0
+# pytest-mock==3.12.0
+# locust==2.19.1
+
+# ============================================================================
+# Code Quality (install with -r requirements-dev.txt)
+# ============================================================================
+# black==23.12.0
+# ruff==0.1.8
+# mypy==1.7.1
+# isort==5.13.0
+# pre-commit==3.6.0
+
