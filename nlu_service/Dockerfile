@@ -24,6 +24,9 @@ ENV PYTHONUNBUFFERED=1 \
 # Copy requirements
 COPY requirements.txt /app/requirements.txt
 
+# Upgrade pip to fix dependency resolution issues
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
+
 # Install Python dependencies
 RUN pip3 install --no-cache-dir -r requirements.txt
 
