@@ -44,11 +44,13 @@ librosa==0.10.1
 # VAD
 silero-vad==6.2.0
 
-# Diarization
-pyannote.audio==3.1.1
+# Diarization (commented out to avoid PyAV build issues)
+# To enable: install pkg-config and ffmpeg-dev in Dockerfile first
+# pyannote.audio==3.1.1
 
-# Emotion
-speechbrain==0.5.16
+# Emotion (commented out to avoid PyAV build issues)
+# To enable: install pkg-config and ffmpeg-dev in Dockerfile first
+# speechbrain==0.5.16
 
 # TTS
 TTS==0.20.0  # Coqui TTS
