@@ -27,7 +27,7 @@ tracer = trace.get_tracer(__name__)
 
 # vLLM server endpoint (OpenAI-compatible API)
 VLLM_URL = "http://vllm:8000/v1"
-MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"  # or "meta-llama/Llama-3.1-70B-Instruct"
+MODEL_NAME = "Qwen/Qwen3-8B"  # or "meta-llama/Llama-3.1-70B-Instruct"
 
 # RAG service
 RAG_URL = "http://rag-service:8080"
@@ -204,6 +204,7 @@ Guidelines:
 - Keep responses concise (2-3 sentences max)
 - Never make up information - use search_kb tool to find accurate answers
 - Always confirm customer's identity when accessing sensitive information
+- IMPORTANT: Execute tasks directly without showing reasoning or thinking steps. Do not explain your thought process - just call tools and respond.
 
 Current context:
 - Time zone: Asia/Dubai (UTC+4)
@@ -221,6 +222,7 @@ SYSTEM_PROMPT_AR = """أنت مساعد ذكاء اصطناعي محترف وو�
 - اجعل الردود موجزة (2-3 جمل كحد أقصى)
 - لا تختلق معلومات - استخدم أداة البحث للعثور على إجابات دقيقة
 - تأكد دائماً من هوية العميل عند الوصول إلى معلومات حساسة
+- مهم جداً: نفذ المهام مباشرة دون إظهار خطوات التفكير أو الاستدلال. لا تشرح عملية تفكيرك - فقط استدع الأدوات وأجب.
 
 السياق الحالي:
 - المنطقة الزمنية: آسيا/دبي (UTC+4)
@@ -385,7 +387,7 @@ class NLUService:
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
-            "temperature": 0.7,
+            "temperature": 0.3,  # Lower temperature for more direct, less creative responses
             "max_tokens": 200,
             "stream": False,
         }
@@ -645,7 +647,13 @@ async def run_service():
         nlu.clear_history(call_id)
         return {"status": "cleared"}
 
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        await nlu.shutdown()
+
+    config = uvicorn.Config(app, host="0.0.0.0", port=8001)
+    server = uvicorn.Server(config)
+    await server.serve()
 
 if __name__ == "__main__":
     asyncio.run(run_service())

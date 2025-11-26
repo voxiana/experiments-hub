@@ -54,9 +54,10 @@ speechbrain==0.5.16
 TTS==0.20.0  # Coqui TTS
 
 # Embeddings & NLP
-sentence-transformers==2.2.2
+sentence-transformers>=2.7.0
 transformers
 accelerate==0.25.0
+huggingface-hub>=0.20.0
 
 # ============================================================================
 # Document Processing (RAG)

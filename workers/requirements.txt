@@ -59,6 +59,7 @@ TTS==0.20.0  # Coqui TTS
 sentence-transformers==2.2.2
 transformers==4.36.0
 accelerate==0.25.0
+huggingface-hub==0.19.4
 
 # ============================================================================
 # Document Processing (RAG)

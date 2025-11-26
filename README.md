@@ -120,6 +120,7 @@ A production-ready conversational AI system for handling customer service calls 
 
 ### Prerequisites
 
+**GPU Mode (Recommended for Production):**
 - **Hardware**: NVIDIA GPU (A10, A100, or RTX 4090 recommended)
   - Minimum 24GB VRAM for dev (single GPU)
   - 160GB+ VRAM for production (multi-GPU)
@@ -128,6 +129,16 @@ A production-ready conversational AI system for handling customer service calls 
   - Docker Compose 2.0+
   - 64GB+ RAM
   - 500GB+ SSD storage
+
+**CPU Mode (Development/Testing):**
+- **Hardware**: CPU-only (no GPU required)
+  - 16GB+ RAM recommended
+  - Multi-core CPU (4+ cores)
+- **Software**:
+  - Docker 20+
+  - Docker Compose 2.0+
+  - 100GB+ SSD storage
+- **Note**: Services will run slower but fully functional for testing
 
 ### Installation (Development)
 
@@ -144,20 +155,29 @@ A production-ready conversational AI system for handling customer service calls 
    ```
 
 3. **Start services**:
+
+   **GPU Mode** (requires NVIDIA Container Toolkit):
+   ```bash
+   docker-compose up -d --profile gpu
+   ```
+
+   **CPU Mode** (no GPU required, Windows/Mac compatible):
    ```bash
    docker-compose up -d
    ```
 
    This will start:
    - Gateway API (port 8000)
-   - ASR service (port 50051)
-   - NLU service (port 8001)
-   - TTS service (port 8002)
-   - RAG service (port 8080)
-   - vLLM server (port 8000)
+   - ASR service (port 50051) - CPU mode uses smaller models
+   - NLU service (port 8001) - Note: vLLM requires GPU, use external LLM API in CPU mode
+   - TTS service (port 8002) - CPU mode supported
+   - RAG service (port 8080) - CPU mode supported
+   - vLLM server (port 8000) - **Only with `--profile gpu`**
    - PostgreSQL, Redis, Qdrant, ClickHouse
    - Prometheus (9090), Grafana (3000)
    - Web demo client (port 3001)
+
+   **Note**: In CPU mode, services automatically use CPU-optimized settings. The `vllm` service is excluded unless you use `--profile gpu`.
 
 4. **Verify services**:
    ```bash

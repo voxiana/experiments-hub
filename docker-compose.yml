@@ -70,22 +70,26 @@ services:
       context: ./asr_service
       dockerfile: Dockerfile
     container_name: voiceai-asr
-    runtime: nvidia
+    # GPU support - remove runtime and deploy sections for CPU-only mode
+    # Uncomment below for GPU support (requires NVIDIA Container Toolkit)
+    # runtime: nvidia
     environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      WHISPER_MODEL: large-v3
-      DEVICE: cuda
+      # NVIDIA_VISIBLE_DEVICES: all  # Uncomment for GPU
+      WHISPER_MODEL: ${WHISPER_MODEL:-medium}  # Use smaller model for CPU
+      DEVICE: ${DEVICE:-cpu}  # Default to CPU
+      COMPUTE_TYPE: ${COMPUTE_TYPE:-int8}  # Use int8 for CPU
     ports:
       - "50051:50051"
     volumes:
       - model_cache:/root/.cache
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # Uncomment below for GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
     depends_on:
       - redis
 
@@ -95,10 +99,13 @@ services:
       dockerfile: Dockerfile
     container_name: voiceai-nlu
     environment:
-      VLLM_URL: http://vllm:8000
+      VLLM_URL: ${VLLM_URL:-http://vllm:8000}  # Can be overridden for CPU mode
       RAG_URL: http://rag-service:8080
       CRM_URL: http://connectors:8090
       REDIS_URL: redis://redis:6379/0
+      LANGFUSE_PUBLIC_KEY: SOME-LANGFUSE-PUBLIC-KEY
+      LANGFUSE_SECRET_KEY: SOME-LANGFUSE-SECRET-KEY
+      LANGFUSE_HOST: https://cloud.langfuse.com
     ports:
       - "8001:8001"
     depends_on:
@@ -110,78 +117,101 @@ services:
       context: ./tts_service
       dockerfile: Dockerfile
     container_name: voiceai-tts
-    runtime: nvidia
+    # GPU support - remove runtime and deploy sections for CPU-only mode
+    # Uncomment below for GPU support (requires NVIDIA Container Toolkit)
+    # runtime: nvidia
     environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      DEVICE: cuda
+      # NVIDIA_VISIBLE_DEVICES: all  # Uncomment for GPU
+      DEVICE: ${DEVICE:-cpu}  # Default to CPU
     ports:
       - "8002:8002"
     volumes:
       - model_cache:/root/.cache
       - ./tts_service/voices:/app/voices
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # Uncomment below for GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
 
   rag-service:
     build:
       context: ./rag_service
       dockerfile: Dockerfile
     container_name: voiceai-rag
-    runtime: nvidia
+    # GPU support - remove runtime and deploy sections for CPU-only mode
+    # Uncomment below for GPU support (requires NVIDIA Container Toolkit)
+    # runtime: nvidia
     environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      DEVICE: cuda
+      # NVIDIA_VISIBLE_DEVICES: all  # Uncomment for GPU
+      DEVICE: ${DEVICE:-cpu}  # Default to CPU
       QDRANT_URL: http://qdrant:6333
     ports:
       - "8080:8080"
     volumes:
       - model_cache:/root/.cache
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # Uncomment below for GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
     depends_on:
       - qdrant
 
   vllm:
     image: vllm/vllm-openai:latest
     container_name: voiceai-vllm
-    runtime: nvidia
+    # NOTE: vLLM REQUIRES NVIDIA GPUs and NVIDIA Container Toolkit
+    # To use vLLM:
+    # 1. Install NVIDIA Container Toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+    # 2. Verify: docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+    # 3. Start with: docker-compose --profile gpu up vllm
+    # 
+    # For CPU-only development, use an external OpenAI-compatible API or skip vLLM
+    # and configure NLU service to use: VLLM_URL=https://api.openai.com/v1
     command: >
-      --model Qwen/Qwen2.5-72B-Instruct
-      --quantization awq
+      --model Qwen/Qwen3-8B
       --dtype half
-      --max-model-len 8192
-      --gpu-memory-utilization 0.9
+      --max-model-len 4096
+      --gpu-memory-utilization 0.85
       --enable-chunked-prefill
-      --api-key dummy
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_xml
     ports:
-      - "8000:8000"
+      - "8003:8000"  # Changed from 8000 to avoid conflict with gateway
     volumes:
       - model_cache:/root/.cache
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./models:/models
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       HF_HOME: /root/.cache
+      HUGGING_FACE_HUB_TOKEN: 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
+    # GPU configuration for Docker Desktop on Windows
+    # Note: Docker Desktop must have GPU support enabled in Settings > Resources > WSL Integration
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 2  # Use 2 GPUs for 72B model
+              count: 1  # Use 1 GPU for 3B model (sufficient for RTX 4090)
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 5
+    # profiles:
+    #   - gpu
+      # vllm requires GPU - only start with --profile gpu flag
+
+
 
   # ============================================================================
   # Application Services
