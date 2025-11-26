@@ -192,7 +192,7 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       HF_HOME: /root/.cache
-      HUGGING_FACE_HUB_TOKEN: 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
+      HUGGING_FACE_HUB_TOKEN: token-here
     # GPU configuration for Docker Desktop on Windows
     # Note: Docker Desktop must have GPU support enabled in Settings > Resources > WSL Integration
     deploy:
