@@ -99,7 +99,7 @@ services:
       dockerfile: Dockerfile
     container_name: voiceai-nlu
     environment:
-      VLLM_URL: ${VLLM_URL:-http://vllm:8000}  # Can be overridden for CPU mode
+      VLLM_URL: ${VLLM_URL:-http://vllm:8003}  # Can be overridden for CPU mode
       RAG_URL: http://rag-service:8080
       CRM_URL: http://connectors:8090
       REDIS_URL: redis://redis:6379/0
@@ -109,8 +109,14 @@ services:
     ports:
       - "8001:8001"
     depends_on:
-      - redis
-      - rag-service
+      # redis:
+      #   condition: service_healthy
+      rag-service:
+        condition: service_started
+      # Note: vllm dependency is required if using default VLLM_URL (http://vllm:8000)
+      # If using external LLM API, set VLLM_URL env var and remove vllm from depends_on
+      vllm:
+        condition: service_started  # Changed to service_started to allow nlu-service to start even if vllm isn't healthy yet
 
   tts-service:
     build:
@@ -167,22 +173,20 @@ services:
   vllm:
     image: vllm/vllm-openai:latest
     container_name: voiceai-vllm
-    # NOTE: vLLM REQUIRES NVIDIA GPUs and NVIDIA Container Toolkit
-    # To use vLLM:
-    # 1. Install NVIDIA Container Toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
-    # 2. Verify: docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
-    # 3. Start with: docker-compose --profile gpu up vllm
-    # 
-    # For CPU-only development, use an external OpenAI-compatible API or skip vLLM
-    # and configure NLU service to use: VLLM_URL=https://api.openai.com/v1
+    # NOTE: This configuration is tailored for Mistral-7B-Instruct-v0.3
+    # Make sure you meet all GPU and container requirements for vLLM.
     command: >
       --model Qwen/Qwen3-8B
-      --dtype half
-      --max-model-len 4096
-      --gpu-memory-utilization 0.85
-      --enable-chunked-prefill
+      --max-model-len 12000
+      --served-model-name Qwen/Qwen3-8B
+      --tokenizer Qwen/Qwen3-8B
+      --disable-log-requests
+      --max-num-seqs 2
+      --enforce-eager
+      --gpu-memory-utilization 0.9
       --enable-auto-tool-choice
-      --tool-call-parser qwen3_xml
+      --tool-call-parser hermes
+      --chat-template /models/qwen3_nonthinking.jinja
     ports:
       - "8003:8000"  # Changed from 8000 to avoid conflict with gateway
     volumes:
@@ -192,7 +196,7 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       HF_HOME: /root/.cache
-      HUGGING_FACE_HUB_TOKEN: token-here
+      HUGGING_FACE_HUB_TOKEN: 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
     # GPU configuration for Docker Desktop on Windows
     # Note: Docker Desktop must have GPU support enabled in Settings > Resources > WSL Integration
     deploy:

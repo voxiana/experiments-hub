@@ -120,6 +120,7 @@ logs/
 !test_audio.py
 
 # Data directories
+models/
 data/
 datasets/
 *.csv

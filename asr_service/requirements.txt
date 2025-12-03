@@ -14,9 +14,9 @@ python-multipart==0.0.6
 # PyTorch (install BEFORE other packages to avoid conflicts)
 # ============================================================================
 # For CUDA 12.1 support
---index-url https://download.pytorch.org/whl/cu124
-torch==2.2.0+cu124
-torchaudio==2.2.0+cu124
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.4.0+cu124
+torchaudio==2.4.0+cu124
 
 # ============================================================================
 # ASR & Audio Processing

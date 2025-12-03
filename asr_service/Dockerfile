@@ -46,9 +46,9 @@ COPY requirements.txt .
 # Install PyTorch first with CUDA 12.4 support
 # Note: Using cu124 wheels
 RUN pip install --no-cache-dir \
-    torch==2.2.0 \
-    torchaudio==2.2.0 \
-    --index-url https://download.pytorch.org/whl/cu124
+    torch==2.4.0+cu124 \
+    torchaudio==2.4.0+cu124 \
+    --extra-index-url https://download.pytorch.org/whl/cu124
 
 # Install remaining dependencies (excluding PyTorch lines)
 RUN grep -v "^torch" requirements.txt | \
