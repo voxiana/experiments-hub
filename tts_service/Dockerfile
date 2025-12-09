@@ -25,12 +25,21 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy service code
 COPY server.py /app/server.py
+COPY bootstrap_voices.py /app/bootstrap_voices.py
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
+# Make entrypoint executable
+RUN chmod +x /app/docker-entrypoint.sh
 
 # Create voices directory
 RUN mkdir -p /app/voices
+COPY voices/ /app/voices/
 
 # Expose port
 EXPOSE 8002
+
+# Use entrypoint script
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # Run the service
 CMD ["python3", "server.py"]

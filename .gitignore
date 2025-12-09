@@ -119,6 +119,10 @@ logs/
 *.ogg
 !test_audio.py
 
+# TTS voice samples (user-specific, not tracked)
+tts_service/voices/*.wav
+!tts_service/voices/README.md
+
 # Data directories
 models/
 data/

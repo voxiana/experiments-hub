@@ -132,7 +132,7 @@ services:
     ports:
       - "8002:8002"
     volumes:
-      - model_cache:/root/.cache
+      # - model_cache:/root/.cache
       - ./tts_service/voices:/app/voices
     # Uncomment below for GPU support
     # deploy:
@@ -196,7 +196,7 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       HF_HOME: /root/.cache
-      HUGGING_FACE_HUB_TOKEN: HUGGING_FACE_HUB_TOKENS
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     # GPU configuration for Docker Desktop on Windows
     # Note: Docker Desktop must have GPU support enabled in Settings > Resources > WSL Integration
     deploy:

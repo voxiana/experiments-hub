@@ -1,459 +1,199 @@
 """
-TTS Service - Neural Text-to-Speech Synthesis
-Uses Coqui XTTS v2 for multilingual, expressive speech synthesis
-Supports Arabic (Gulf/MSA) and English with controllable prosody
+Simplified TTS Service using Coqui XTTS v2
 """
 
-import asyncio
 import base64
 import io
 import logging
-import time
-from typing import AsyncIterator, Optional
-from concurrent.futures import ThreadPoolExecutor
+import os
+from contextlib import asynccontextmanager
 
-import torch
 import numpy as np
 import soundfile as sf
-from TTS.api import TTS
+import torch
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import uvicorn
 
-logging.basicConfig(level=logging.INFO)
+# Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# Configuration
-# ============================================================================
+# Fix for PyTorch 2.6+ weights_only default change
+# Patch torch.load to use weights_only=False for TTS compatibility
+_original_torch_load = torch.load
+def _patched_torch_load(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _original_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
 
-# Model configuration
+from TTS.api import TTS
+
+# Configuration
+os.environ["COQUI_TOS_AGREED"] = "1"
+
 MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+SAMPLE_RATE = 24000
 
-# Audio configuration
-SAMPLE_RATE = 24000  # XTTS v2 native sample rate
-CHUNK_DURATION_MS = 250  # Stream in 250ms chunks
-STREAMING = True
+# Path to reference voice (update this to your voice file)
+REFERENCE_VOICE = os.path.join(os.path.dirname(__file__), "voices", "reference_voice.wav")
 
-# Voice presets
-VOICE_PRESETS = {
-    "arabic_gulf_male": "voices/arabic_gulf_male.wav",
-    "arabic_gulf_female": "voices/arabic_gulf_female.wav",
-    "arabic_msa_male": "voices/arabic_msa_male.wav",
-    "english_uae_male": "voices/english_uae_male.wav",
-    "english_uae_female": "voices/english_uae_female.wav",
-}
 
-# ============================================================================
 # Request/Response Models
-# ============================================================================
-
 class SynthesizeRequest(BaseModel):
-    """Request schema for synthesis"""
     text: str
-    voice_id: str = "arabic_gulf_male"
     language: str = "ar"  # ar, en
-    speed: float = 1.0
-    emotion: Optional[str] = None  # neutral, happy, sad, energetic
-    stream: bool = True
+    reference_audio: str | None = None  # Optional base64 audio to clone
+
 
 class SynthesizeResponse(BaseModel):
-    """Response schema for synthesis"""
-    audio_base64: Optional[str] = None  # For non-streaming
-    duration_seconds: float
-    sample_rate: int
-    format: str = "wav"
-
-class AudioChunk(BaseModel):
-    """Streaming audio chunk"""
-    chunk_index: int
     audio_base64: str
-    is_final: bool
+    duration_seconds: float
+    sample_rate: int = SAMPLE_RATE
 
-# ============================================================================
+
 # TTS Service
-# ============================================================================
-
 class TTSService:
-    """
-    TTS Service using Coqui XTTS v2
-    Supports multilingual synthesis with voice cloning
-    """
-
     def __init__(self):
-        logger.info(f"Loading TTS model: {MODEL_NAME}...")
+        logger.info(f"Loading model: {MODEL_NAME} on {DEVICE}")
         self.model = TTS(MODEL_NAME).to(DEVICE)
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        logger.info("Model loaded successfully")
 
-        # Load voice presets
-        self.voice_samples = {}
-        self._load_voice_presets()
-
-        logger.info(f"✅ TTS model loaded on {DEVICE}")
-
-    def _load_voice_presets(self):
-        """Load reference voice samples for cloning"""
-        # In production, these would be real voice samples
-        # For now, we'll use placeholders
-        logger.info("Loading voice presets...")
-        for voice_id, path in VOICE_PRESETS.items():
-            # TODO: Load actual voice samples
-            # self.voice_samples[voice_id] = path
-            logger.info(f"  - {voice_id}: {path} (placeholder)")
-
-    async def synthesize_streaming(
-        self,
-        text: str,
-        voice_id: str = "arabic_gulf_male",
-        language: str = "ar",
-        speed: float = 1.0,
-        emotion: Optional[str] = None,
-    ) -> AsyncIterator[AudioChunk]:
-        """
-        Streaming synthesis
-        Yields audio chunks as they are generated
-        """
-        start_time = time.time()
-
-        # Get voice sample
-        speaker_wav = VOICE_PRESETS.get(voice_id)
-        if not speaker_wav:
-            speaker_wav = VOICE_PRESETS["arabic_gulf_male"]  # Default
-            logger.warning(f"Voice {voice_id} not found, using default")
-
-        # Preprocess text
-        text = self._preprocess_text(text, language, emotion)
-
-        # Split into sentences for faster streaming
-        sentences = self._split_sentences(text, language)
-
-        chunk_index = 0
-        total_duration = 0
-
-        for i, sentence in enumerate(sentences):
-            if not sentence.strip():
-                continue
-
-            # Synthesize sentence
-            loop = asyncio.get_event_loop()
-            audio = await loop.run_in_executor(
-                self.executor,
-                self._synthesize_chunk,
-                sentence,
-                speaker_wav,
-                language,
-                speed,
-            )
-
-            # Convert to bytes
-            audio_bytes = self._audio_to_bytes(audio)
-
-            # Encode to base64
-            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-
-            duration = len(audio) / SAMPLE_RATE
-            total_duration += duration
-
-            # Yield chunk
-            yield AudioChunk(
-                chunk_index=chunk_index,
-                audio_base64=audio_b64,
-                is_final=(i == len(sentences) - 1),
-            )
-
-            chunk_index += 1
-
-        elapsed = time.time() - start_time
-        rtf = elapsed / total_duration if total_duration > 0 else 0
-
-        logger.info(
-            f"Synthesized {len(sentences)} sentences, {total_duration:.2f}s audio "
-            f"in {elapsed:.3f}s (RTF={rtf:.2f})"
+    def synthesize(self, text: str, language: str, speaker_wav: str) -> tuple[bytes, float]:
+        """Generate speech from text."""
+        
+        # Generate audio
+        wav = self.model.tts(
+            text=text,
+            speaker_wav=speaker_wav,
+            language=language,
         )
-
-    def _synthesize_chunk(
-        self,
-        text: str,
-        speaker_wav: str,
-        language: str,
-        speed: float,
-    ) -> np.ndarray:
-        """
-        Synchronous synthesis (runs in thread pool)
-        Returns: audio array
-        """
-        try:
-            # XTTS v2 synthesis
-            # Note: In production, use actual speaker_wav file
-            # For now, use built-in voices
-            wav = self.model.tts(
-                text=text,
-                language=language,
-                # speaker_wav=speaker_wav,  # Uncomment when using real voice samples
-            )
-
-            # Convert to numpy array
-            audio = np.array(wav)
-
-            # Apply speed adjustment
-            if speed != 1.0:
-                audio = self._adjust_speed(audio, speed)
-
-            return audio
-
-        except Exception as e:
-            logger.error(f"Synthesis error: {e}", exc_info=True)
-            # Return silence on error
-            return np.zeros(int(SAMPLE_RATE * 0.5))
-
-    async def synthesize(
-        self,
-        text: str,
-        voice_id: str = "arabic_gulf_male",
-        language: str = "ar",
-        speed: float = 1.0,
-        emotion: Optional[str] = None,
-    ) -> tuple[bytes, float]:
-        """
-        Non-streaming synthesis
-        Returns: (audio_bytes, duration)
-        """
-        start_time = time.time()
-
-        speaker_wav = VOICE_PRESETS.get(voice_id, VOICE_PRESETS["arabic_gulf_male"])
-        text = self._preprocess_text(text, language, emotion)
-
-        # Synthesize
-        loop = asyncio.get_event_loop()
-        audio = await loop.run_in_executor(
-            self.executor,
-            self._synthesize_chunk,
-            text,
-            speaker_wav,
-            language,
-            speed,
-        )
-
-        # Convert to bytes
-        audio_bytes = self._audio_to_bytes(audio)
+        
+        # Process audio
+        audio = self._process_audio(wav)
+        
+        # Convert to WAV bytes
         duration = len(audio) / SAMPLE_RATE
-
-        elapsed = time.time() - start_time
-        logger.info(f"Synthesized {duration:.2f}s audio in {elapsed:.3f}s")
-
+        audio_bytes = self._to_wav_bytes(audio)
+        
         return audio_bytes, duration
 
-    def _preprocess_text(self, text: str, language: str, emotion: Optional[str]) -> str:
-        """
-        Preprocess text for synthesis
-        - Add SSML-like tags for emotion
-        - Normalize punctuation
-        - Handle numbers and abbreviations
-        """
-        # Remove extra whitespace
-        text = " ".join(text.split())
+    def _process_audio(self, wav) -> np.ndarray:
+        """Process and clean the generated audio."""
+        
+        # Convert to numpy array
+        audio = np.array(wav, dtype=np.float32)
+        
+        # Ensure 1D
+        if audio.ndim > 1:
+            audio = audio.flatten()
+        
+        # Remove NaN/Inf values
+        audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # Remove DC offset
+        audio = audio - np.mean(audio)
+        
+        # Normalize with headroom (-3dB)
+        max_val = np.max(np.abs(audio))
+        if max_val > 0:
+            audio = audio / max_val * 0.707
+        
+        # Apply fade in/out to prevent clicks (10ms)
+        fade_samples = int(SAMPLE_RATE * 0.01)
+        if len(audio) > fade_samples * 2:
+            fade_in = np.linspace(0, 1, fade_samples)
+            fade_out = np.linspace(1, 0, fade_samples)
+            audio[:fade_samples] *= fade_in
+            audio[-fade_samples:] *= fade_out
+        
+        return audio
 
-        # Add emotion markers (if model supports)
-        if emotion and emotion != "neutral":
-            # XTTS v2 doesn't natively support emotion tags
-            # But we can adjust text to convey emotion
-            if emotion == "happy":
-                text = f"{text}!"  # Add exclamation
-            elif emotion == "sad":
-                text = f"{text}..."  # Add ellipsis
-
-        # Handle Arabic numerals
-        if language == "ar":
-            # Convert Western numerals to Arabic-Indic if needed
-            pass
-
-        return text
-
-    def _split_sentences(self, text: str, language: str) -> list:
-        """
-        Split text into sentences for streaming
-        """
-        import re
-
-        if language == "ar":
-            # Arabic sentence delimiters
-            sentences = re.split(r'[.!؟。]', text)
-        else:
-            # English sentence delimiters
-            sentences = re.split(r'[.!?]', text)
-
-        # Filter empty and add punctuation back
-        result = []
-        for s in sentences:
-            s = s.strip()
-            if s:
-                # Add period if missing
-                if not s[-1] in '.!?؟。':
-                    s += '.'
-                result.append(s)
-
-        return result
-
-    def _adjust_speed(self, audio: np.ndarray, speed: float) -> np.ndarray:
-        """
-        Adjust audio speed using time stretching
-        """
-        if speed == 1.0:
-            return audio
-
-        try:
-            import librosa
-            audio_stretched = librosa.effects.time_stretch(audio, rate=speed)
-            return audio_stretched
-        except ImportError:
-            logger.warning("librosa not available, speed adjustment disabled")
-            return audio
-
-    def _audio_to_bytes(self, audio: np.ndarray) -> bytes:
-        """
-        Convert audio array to WAV bytes
-        """
-        # Ensure correct shape
-        if len(audio.shape) == 1:
-            audio = audio.reshape(-1, 1)
-
-        # Convert to int16
-        audio_int16 = (audio * 32767).astype(np.int16)
-
-        # Write to bytes buffer
+    def _to_wav_bytes(self, audio: np.ndarray) -> bytes:
+        """Convert audio array to WAV bytes."""
         buffer = io.BytesIO()
-        sf.write(buffer, audio_int16, SAMPLE_RATE, format='WAV')
+        sf.write(buffer, audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")
         buffer.seek(0)
-
         return buffer.read()
 
-# ============================================================================
-# Piper TTS (Fallback for ultra-low latency)
-# ============================================================================
 
-class PiperTTS:
-    """
-    Piper TTS fallback for low-latency scenarios
-    Faster but less expressive than XTTS v2
-    """
+# FastAPI App
+tts_service: TTSService | None = None
 
-    def __init__(self):
-        # TODO: Initialize Piper
-        logger.info("Piper TTS fallback (not implemented)")
 
-    async def synthesize(self, text: str, language: str) -> bytes:
-        """Fast synthesis"""
-        # TODO: Implement Piper synthesis
-        return b""
-
-# ============================================================================
-# FastAPI Server
-# ============================================================================
-
-app = FastAPI(title="TTS Service", version="1.0.0")
-tts_service = None
-
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global tts_service
     tts_service = TTSService()
-    logger.info("🔊 TTS Service started")
+    yield
+    tts_service = None
+
+
+app = FastAPI(title="TTS Service", version="1.0.0", lifespan=lifespan)
+
 
 @app.get("/health")
 async def health():
-    """Health check"""
     return {
         "status": "healthy",
         "model": MODEL_NAME,
         "device": DEVICE,
-        "voices": list(VOICE_PRESETS.keys()),
     }
 
-@app.get("/voices")
-async def list_voices():
-    """List available voices"""
-    return {
-        "voices": [
-            {"id": "arabic_gulf_male", "language": "ar", "gender": "male", "region": "Gulf"},
-            {"id": "arabic_gulf_female", "language": "ar", "gender": "female", "region": "Gulf"},
-            {"id": "arabic_msa_male", "language": "ar", "gender": "male", "region": "MSA"},
-            {"id": "english_uae_male", "language": "en", "gender": "male", "region": "UAE"},
-            {"id": "english_uae_female", "language": "en", "gender": "female", "region": "UAE"},
-        ]
-    }
 
 @app.post("/synthesize", response_model=SynthesizeResponse)
 async def synthesize(request: SynthesizeRequest):
-    """
-    Synthesize speech (non-streaming)
-    """
-    if not request.text:
+    """Synthesize speech from text."""
+    
+    if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text is required")
-
+    
+    # Determine speaker reference
+    if request.reference_audio:
+        # Use provided base64 audio as reference
+        speaker_wav = _save_temp_audio(request.reference_audio)
+    else:
+        # Use default reference voice
+        if not os.path.exists(REFERENCE_VOICE):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Reference voice not found: {REFERENCE_VOICE}"
+            )
+        speaker_wav = REFERENCE_VOICE
+    
     try:
-        audio_bytes, duration = await tts_service.synthesize(
+        audio_bytes, duration = tts_service.synthesize(
             text=request.text,
-            voice_id=request.voice_id,
             language=request.language,
-            speed=request.speed,
-            emotion=request.emotion,
+            speaker_wav=speaker_wav,
         )
-
-        audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-
+        
         return SynthesizeResponse(
-            audio_base64=audio_b64,
+            audio_base64=base64.b64encode(audio_bytes).decode("utf-8"),
             duration_seconds=duration,
-            sample_rate=SAMPLE_RATE,
-            format="wav",
         )
-
+    
     except Exception as e:
         logger.error(f"Synthesis failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    
+    finally:
+        # Cleanup temp file if created
+        if request.reference_audio and os.path.exists(speaker_wav):
+            os.remove(speaker_wav)
 
-@app.post("/synthesize/stream")
-async def synthesize_stream(request: SynthesizeRequest):
-    """
-    Synthesize speech (streaming)
-    Returns SSE stream of audio chunks
-    """
-    from fastapi.responses import StreamingResponse
 
-    if not request.text:
-        raise HTTPException(status_code=400, detail="Text is required")
+def _save_temp_audio(base64_audio: str) -> str:
+    """Save base64 audio to a temp file and return the path."""
+    import tempfile
+    
+    audio_bytes = base64.b64decode(base64_audio)
+    
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(audio_bytes)
+        return f.name
 
-    async def generate():
-        try:
-            async for chunk in tts_service.synthesize_streaming(
-                text=request.text,
-                voice_id=request.voice_id,
-                language=request.language,
-                speed=request.speed,
-                emotion=request.emotion,
-            ):
-                yield f"data: {chunk.json()}\n\n"
-
-            yield "data: [DONE]\n\n"
-
-        except Exception as e:
-            logger.error(f"Streaming synthesis failed: {e}", exc_info=True)
-            yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-    )
-
-# ============================================================================
-# Main Entry Point
-# ============================================================================
 
 if __name__ == "__main__":
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8002,
-        log_level="info",
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8002)

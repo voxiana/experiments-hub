@@ -137,7 +137,14 @@ pip install -r requirements.txt
 python -c "from TTS.api import TTS; TTS('tts_models/multilingual/multi-dataset/xtts_v2')"
 ```
 
-4. **Run the service**:
+4. **Bootstrap voice samples** (required for TTS to work):
+```bash
+# Generate initial voice samples using the TTS model
+python bootstrap_voices.py
+```
+This creates initial voice samples in `voices/` directory. For production, replace with actual recorded samples.
+
+5. **Run the service**:
 ```bash
 python server.py
 # Service will start on http://0.0.0.0:8002
