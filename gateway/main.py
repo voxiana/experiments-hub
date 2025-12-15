@@ -6,12 +6,14 @@ FastAPI-based gateway with REST endpoints and WebSocket streaming.
 import asyncio
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 from uuid import uuid4
 
 import aioredis
+import httpx
 from fastapi import (
     FastAPI,
     WebSocket,
@@ -38,10 +40,13 @@ from datetime import datetime, timedelta
 # ============================================================================
 
 # Environment variables (replace with config loader in production)
-DATABASE_URL = "postgresql+asyncpg://voiceai:voiceai@postgres:5432/voiceai"
-REDIS_URL = "redis://redis:6379/0"
-JWT_SECRET = "your-secret-key-change-in-production"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://voiceai:voiceai@postgres:5432/voiceai")
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key-change-in-production")
 JWT_ALGORITHM = "HS256"
+ASR_SERVICE_URL = os.getenv("ASR_SERVICE_URL", "http://asr-service:8050")
+NLU_SERVICE_URL = os.getenv("NLU_SERVICE_URL", "http://nlu-service:8001")
+TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "http://tts-service:8002")
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -50,11 +55,19 @@ logger = logging.getLogger(__name__)
 # OpenTelemetry
 tracer = trace.get_tracer(__name__)
 
-# Prometheus metrics
-REQUESTS = Counter('gateway_requests_total', 'Total requests', ['method', 'endpoint'])
-LATENCY = Histogram('gateway_request_duration_seconds', 'Request latency')
-WS_CONNECTIONS = Counter('gateway_ws_connections_total', 'WebSocket connections', ['status'])
-CALL_EVENTS = Counter('gateway_call_events_total', 'Call events', ['event_type'])
+# Prometheus metrics - handle reload case
+try:
+    REQUESTS = Counter('gateway_requests_total', 'Total requests', ['method', 'endpoint'])
+    LATENCY = Histogram('gateway_request_duration_seconds', 'Request latency')
+    WS_CONNECTIONS = Counter('gateway_ws_connections_total', 'WebSocket connections', ['status'])
+    CALL_EVENTS = Counter('gateway_call_events_total', 'Call events', ['event_type'])
+except ValueError:
+    # Metrics already registered (happens during reload)
+    from prometheus_client import REGISTRY
+    REQUESTS = REGISTRY._names_to_collectors['gateway_requests_total']
+    LATENCY = REGISTRY._names_to_collectors['gateway_request_duration_seconds']
+    WS_CONNECTIONS = REGISTRY._names_to_collectors['gateway_ws_connections_total']
+    CALL_EVENTS = REGISTRY._names_to_collectors['gateway_call_events_total']
 
 # ============================================================================
 # Database Setup
@@ -162,6 +175,25 @@ class RedisManager:
 redis_manager = RedisManager()
 
 # ============================================================================
+# HTTP Client Manager
+# ============================================================================
+
+class HTTPClientManager:
+    def __init__(self):
+        self.client: Optional[httpx.AsyncClient] = None
+    
+    async def connect(self):
+        self.client = httpx.AsyncClient(timeout=30.0)
+        logger.info("✅ HTTP client initialized")
+    
+    async def disconnect(self):
+        if self.client:
+            await self.client.aclose()
+            logger.info("HTTP client closed")
+
+http_client = HTTPClientManager()
+
+# ============================================================================
 # WebSocket Connection Manager
 # ============================================================================
 
@@ -237,6 +269,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("🚀 Starting Voice AI CX Gateway...")
     await redis_manager.connect()
+    await http_client.connect()
 
     # TODO: Initialize database tables
     # async with engine.begin() as conn:
@@ -246,6 +279,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down...")
+    await http_client.disconnect()
     await redis_manager.disconnect()
     await engine.dispose()
 
@@ -432,23 +466,104 @@ async def websocket_endpoint(websocket: WebSocket, call_id: str):
 
             if msg_type == "audio":
                 # Audio chunk received from client
-                audio_data = message.get("data")  # base64-encoded PCM
+                audio_data = message.get("data")  # base64-encoded audio
+                audio_format = message.get("format", "pcm16")  # pcm16 or webm
+                sample_rate = message.get("sampleRate", 16000)
 
                 # Publish to Redis for ASR service to consume
                 await redis_manager.publish(f"audio:{call_id}", json.dumps({
                     "call_id": call_id,
                     "audio": audio_data,
+                    "format": audio_format,
+                    "sampleRate": sample_rate,
                     "timestamp": time.time(),
                 }))
 
-                # TODO: In production, send via gRPC to ASR service
-
-                # Echo interim transcript (mock)
-                await websocket.send_json({
-                    "type": "transcript_interim",
-                    "text": "Processing...",
-                    "timestamp": time.time(),
-                })
+                # Call ASR service
+                try:
+                    # Get language from call data
+                    language = "auto"
+                    if call_data:
+                        data = json.loads(call_data)
+                        language = data.get("language", "auto")
+                    
+                    # Use base64 endpoint for raw PCM audio (more efficient)
+                    if audio_format == "pcm16":
+                        # Send directly as base64 PCM to ASR service
+                        response = await http_client.client.post(
+                            f"{ASR_SERVICE_URL}/transcribe/base64",
+                            json={
+                                "audio_base64": audio_data,
+                                "language": language,
+                                "task": "transcribe",
+                            },
+                            timeout=30.0,
+                        )
+                    else:
+                        # Legacy: handle webm files
+                        import base64
+                        import tempfile
+                        import os
+                        
+                        audio_bytes = base64.b64decode(audio_data)
+                        
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
+                            tmp.write(audio_bytes)
+                            tmp_path = tmp.name
+                        
+                        with open(tmp_path, "rb") as f:
+                            files = {"file": ("audio.webm", f, "audio/webm")}
+                            response = await http_client.client.post(
+                                f"{ASR_SERVICE_URL}/transcribe",
+                                files=files,
+                                params={"language": language},
+                                timeout=30.0,
+                            )
+                        
+                        os.unlink(tmp_path)
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        transcript = result.get("text", "").strip()
+                        
+                        if transcript:
+                            # Send final transcript
+                            await websocket.send_json({
+                                "type": "transcript_final",
+                                "text": transcript,
+                                "language": result.get("language", language),
+                                "timestamp": time.time(),
+                            })
+                            
+                            # TODO: Call NLU service for response
+                            # For now, send a mock response
+                            await websocket.send_json({
+                                "type": "response",
+                                "text": f"I heard you say: {transcript}",
+                                "timestamp": time.time(),
+                            })
+                        else:
+                            # No speech detected
+                            await websocket.send_json({
+                                "type": "transcript_interim",
+                                "text": "Listening...",
+                                "timestamp": time.time(),
+                            })
+                    else:
+                        logger.error(f"ASR service error: {response.status_code} - {response.text}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": "Transcription failed",
+                            "timestamp": time.time(),
+                        })
+                        
+                except Exception as e:
+                    logger.error(f"Error calling ASR service: {e}", exc_info=True)
+                    await websocket.send_json({
+                        "type": "transcript_interim",
+                        "text": "Processing...",
+                        "timestamp": time.time(),
+                    })
 
             elif msg_type == "barge_in":
                 # User interrupted bot speech

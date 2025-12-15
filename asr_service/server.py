@@ -392,7 +392,7 @@ class ASRService:
     async def transcribe_file(self, audio_path: str, language: str = None) -> dict:
         """
         Transcribe complete audio file (non-streaming)
-        Supports: WAV, MP3, M4A, FLAC, OGG, and other formats via librosa/ffmpeg
+        Supports: WAV, MP3, M4A, FLAC, OGG, WebM and other formats via ffmpeg
         """
         logger.info("=" * 60)
         logger.info("Transcribing audio file")
@@ -404,12 +404,14 @@ class ASRService:
 
         # Detect file format
         import os
+        import subprocess
         file_ext = os.path.splitext(audio_path)[1].lower()
         logger.info(f"Detected file extension: {file_ext}")
 
         # Load audio with fallback mechanism
         # Try soundfile first (fast, supports WAV, FLAC, OGG)
-        # Fall back to librosa (supports MP3, M4A via ffmpeg)
+        # Fall back to ffmpeg direct conversion for WebM/MP3/M4A
+        # Finally try librosa as last resort
         audio = None
         sr = None
         load_method = None
@@ -422,19 +424,65 @@ class ASRService:
             logger.info(f"✅ Successfully loaded with soundfile")
         except Exception as sf_error:
             logger.warning(f"soundfile failed: {sf_error}")
-            logger.info(f"Falling back to librosa (supports more formats via ffmpeg)...")
+            
+            # Try ffmpeg direct conversion (best for WebM, MP3, M4A)
+            logger.info(f"Attempting to convert with ffmpeg...")
             try:
-                import librosa
-                audio, sr = librosa.load(audio_path, sr=None, mono=True)
-                load_method = "librosa"
-                logger.info(f"✅ Successfully loaded with librosa")
-            except Exception as librosa_error:
-                logger.error(f"librosa also failed: {librosa_error}")
-                raise Exception(
-                    f"Failed to load audio file with both soundfile and librosa. "
-                    f"Ensure ffmpeg is installed for MP3/M4A support. "
-                    f"soundfile error: {sf_error}, librosa error: {librosa_error}"
+                import subprocess
+                import tempfile
+                
+                # Create temporary WAV file
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_wav:
+                    tmp_wav_path = tmp_wav.name
+                
+                # Use ffmpeg to convert to WAV
+                cmd = [
+                    'ffmpeg', '-i', audio_path,
+                    '-ar', '16000',  # Resample to 16kHz
+                    '-ac', '1',      # Convert to mono
+                    '-f', 'wav',     # Output format
+                    '-y',            # Overwrite
+                    tmp_wav_path
+                ]
+                
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
                 )
+                
+                if result.returncode == 0:
+                    # Load the converted WAV file
+                    import soundfile as sf
+                    audio, sr = sf.read(tmp_wav_path, dtype='float32')
+                    load_method = "ffmpeg+soundfile"
+                    logger.info(f"✅ Successfully converted with ffmpeg and loaded")
+                    
+                    # Clean up temp file
+                    os.unlink(tmp_wav_path)
+                else:
+                    logger.warning(f"ffmpeg conversion failed: {result.stderr}")
+                    raise Exception(f"ffmpeg failed: {result.stderr}")
+                    
+            except Exception as ffmpeg_error:
+                logger.warning(f"ffmpeg conversion failed: {ffmpeg_error}")
+                logger.info(f"Falling back to librosa...")
+                
+                # Last resort: try librosa
+                try:
+                    import librosa
+                    audio, sr = librosa.load(audio_path, sr=None, mono=True)
+                    load_method = "librosa"
+                    logger.info(f"✅ Successfully loaded with librosa")
+                except Exception as librosa_error:
+                    logger.error(f"librosa also failed: {librosa_error}")
+                    raise Exception(
+                        f"Failed to load audio file with all methods. "
+                        f"soundfile error: {sf_error}, "
+                        f"ffmpeg error: {ffmpeg_error}, "
+                        f"librosa error: {librosa_error}"
+                    )
 
         # Log audio info
         duration = len(audio) / sr
@@ -613,7 +661,7 @@ async def run_rest_server():
         # This would be implemented as WebSocket in production
         return {"message": "Use WebSocket endpoint /ws/transcribe"}
 
-    uvicorn.run(app, host="0.0.0.0", port=50051, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8050, log_level="info")
 
 # ============================================================================
 # Main Entry Point

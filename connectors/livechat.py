@@ -359,3 +359,24 @@ class HandoffManager:
             suggestions.append("Escalate to supervisor if needed")
 
         return suggestions
+
+# ============================================================================
+# LiveChat Factory
+# ============================================================================
+
+class LiveChatFactory:
+    """Factory for creating LiveChat connectors"""
+
+    _connectors = {
+        "livechat": LiveChatConnector,
+        "webhook": WebhookHandoffConnector,
+    }
+
+    @classmethod
+    def create(cls, chat_type: str, config: Dict):
+        """Create a LiveChat connector instance"""
+        connector_class = cls._connectors.get(chat_type.lower())
+        if not connector_class:
+            raise ValueError(f"Unknown chat type: {chat_type}")
+
+        return connector_class(config)
