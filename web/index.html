@@ -69,6 +69,17 @@
             color: #960;
         }
 
+        .status.speaking {
+            background: #e6f3ff;
+            color: #0066cc;
+            animation: pulse 1s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
         .controls {
             display: flex;
             gap: 15px;
@@ -163,6 +174,16 @@
             margin-top: 5px;
         }
 
+        .message .message-latency {
+            font-size: 0.75em;
+            color: #666;
+            background: rgba(0, 0, 0, 0.05);
+            padding: 4px 8px;
+            border-radius: 4px;
+            margin-top: 8px;
+            font-family: monospace;
+        }
+
         .metrics {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -227,6 +248,85 @@
             font-size: 1em;
             width: 100%;
         }
+
+        .latency-breakdown {
+            background: #f7fafc;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .latency-breakdown h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.1em;
+        }
+
+        .latency-items {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .latency-item {
+            display: grid;
+            grid-template-columns: 180px 1fr 80px;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .latency-label {
+            font-size: 0.9em;
+            color: #555;
+            white-space: nowrap;
+        }
+
+        .latency-bar-container {
+            height: 24px;
+            background: #e2e8f0;
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .latency-bar {
+            height: 100%;
+            border-radius: 12px;
+            transition: width 0.5s ease-out;
+            width: 0%;
+        }
+
+        .asr-bar {
+            background: linear-gradient(90deg, #3182ce, #63b3ed);
+        }
+
+        .model-bar {
+            background: linear-gradient(90deg, #805ad5, #b794f4);
+        }
+
+        .tts-bar {
+            background: linear-gradient(90deg, #38a169, #68d391);
+        }
+
+        .latency-value {
+            font-weight: bold;
+            font-size: 0.95em;
+            color: #333;
+            text-align: right;
+        }
+
+        @media (max-width: 600px) {
+            .latency-item {
+                grid-template-columns: 1fr 60px;
+                gap: 8px;
+            }
+            .latency-label {
+                font-size: 0.8em;
+            }
+            .latency-bar-container {
+                display: none;
+            }
+        }
     </style>
 </head>
 <body>
@@ -278,8 +378,35 @@
                 <div class="value" id="turns">0</div>
             </div>
             <div class="metric">
-                <div class="label">Latency</div>
+                <div class="label">Total Latency</div>
                 <div class="value" id="latency">-</div>
+            </div>
+        </div>
+
+        <div class="latency-breakdown">
+            <h3>⏱️ Latency Breakdown</h3>
+            <div class="latency-items">
+                <div class="latency-item">
+                    <span class="latency-label">🎤 ASR (Speech-to-Text)</span>
+                    <span class="latency-bar-container">
+                        <span class="latency-bar asr-bar" id="asr-bar"></span>
+                    </span>
+                    <span class="latency-value" id="asr-latency">-</span>
+                </div>
+                <div class="latency-item">
+                    <span class="latency-label">🧠 Model (LLM Response)</span>
+                    <span class="latency-bar-container">
+                        <span class="latency-bar model-bar" id="model-bar"></span>
+                    </span>
+                    <span class="latency-value" id="model-latency">-</span>
+                </div>
+                <div class="latency-item">
+                    <span class="latency-label">🔊 TTS (Text-to-Speech)</span>
+                    <span class="latency-bar-container">
+                        <span class="latency-bar tts-bar" id="tts-bar"></span>
+                    </span>
+                    <span class="latency-value" id="tts-latency">-</span>
+                </div>
             </div>
         </div>
     </div>
@@ -294,16 +421,24 @@
         let turnCount = 0;
         let isRecording = false;
         let currentAudio = null;
+        let isProcessing = false;  // True when waiting for ASR/NLU/TTS response
+        let isSpeaking = false;    // True when TTS audio is playing
+        let bargeInEnabled = true; // Enable/disable barge-in feature
 
         // Update status display
         function updateStatus(status, text) {
             const statusEl = document.getElementById('status');
-            statusEl.className = `status ${status}`;
+            // Map states to CSS classes
+            let cssClass = status;
+            if (text.includes('Speaking')) {
+                cssClass = 'speaking';
+            }
+            statusEl.className = `status ${cssClass}`;
             statusEl.textContent = text;
         }
 
         // Add message to transcript
-        function addMessage(role, text, interim = false) {
+        function addMessage(role, text, interim = false, latencyInfo = null) {
             const transcript = document.getElementById('transcript');
 
             // Remove previous interim message if exists
@@ -314,9 +449,16 @@
 
             const message = document.createElement('div');
             message.className = `message ${interim ? 'interim' : role}`;
+            
+            let latencyHtml = '';
+            if (latencyInfo && role === 'assistant') {
+                latencyHtml = `<div class="message-latency">⏱️ ASR: ${(latencyInfo.asr_ms/1000).toFixed(2)}s | Model: ${(latencyInfo.model_ms/1000).toFixed(2)}s | TTS: ${(latencyInfo.tts_ms/1000).toFixed(2)}s</div>`;
+            }
+            
             message.innerHTML = `
                 <div class="role">${role === 'user' ? '👤 You' : '🤖 Assistant'}</div>
                 <div class="text">${text}</div>
+                ${latencyHtml}
                 <div class="timestamp">${new Date().toLocaleTimeString()}</div>
             `;
 
@@ -445,7 +587,10 @@
             const MIN_SAMPLES = 32000; // Minimum 2 seconds at 16kHz before sending
             const MAX_SAMPLES = 80000; // Maximum 5 seconds at 16kHz
             const SILENCE_THRESHOLD = 0.01; // Energy threshold for speech detection
+            const BARGE_IN_THRESHOLD = 0.03; // Higher threshold for barge-in (avoid speaker bleed)
             const SILENCE_DURATION = 16000; // 1 second of silence triggers send (at 16kHz)
+            let consecutiveBargeInFrames = 0; // Need sustained speech for barge-in
+            const BARGE_IN_FRAMES_REQUIRED = 3; // ~300ms of speech for barge-in
             
             let speechDetected = false;
             let silenceSamples = 0;
@@ -468,6 +613,27 @@
                 // Calculate RMS energy for voice activity detection
                 const energy = calculateEnergy(resampledData);
                 const isSpeech = energy > SILENCE_THRESHOLD;
+                const isLoudSpeech = energy > BARGE_IN_THRESHOLD;
+                
+                // Barge-in detection: If user speaks loudly while TTS is playing, stop it
+                // Requires sustained speech to avoid false triggers from speaker bleed
+                if (isSpeaking && bargeInEnabled) {
+                    if (isLoudSpeech) {
+                        consecutiveBargeInFrames++;
+                        if (consecutiveBargeInFrames >= BARGE_IN_FRAMES_REQUIRED) {
+                            console.log(`🎤 Barge-in detected! Energy: ${energy.toFixed(4)}, frames: ${consecutiveBargeInFrames}`);
+                            triggerBargeIn();
+                            consecutiveBargeInFrames = 0;
+                        }
+                    } else {
+                        consecutiveBargeInFrames = 0;
+                    }
+                }
+                
+                // Don't accumulate audio while processing (prevents queue buildup)
+                if (isProcessing) {
+                    return;
+                }
                 
                 if (isSpeech) {
                     speechDetected = true;
@@ -493,6 +659,10 @@
                 
                 if (shouldSend && audioBuffer.length > 0) {
                     console.log(`Sending ${audioBuffer.length} samples (${(audioBuffer.length/16000).toFixed(2)}s), energy: ${energy.toFixed(4)}`);
+                    
+                    // Mark as processing - don't accept new audio until response
+                    isProcessing = true;
+                    updateStatus('active', 'Processing your speech...');
                     
                     // Convert float32 to int16 PCM
                     const int16Data = new Int16Array(audioBuffer.length);
@@ -591,8 +761,6 @@
 
         // Handle server messages
         function handleServerMessage(message) {
-            const startLatency = Date.now();
-
             switch (message.type) {
                 case 'transcript_interim':
                     addMessage('user', message.text, true);
@@ -600,25 +768,41 @@
 
                 case 'transcript_final':
                     addMessage('user', message.text, false);
-                    updateStatus('active', 'Processing...');
+                    updateStatus('active', '🧠 Getting AI response...');
+                    
+                    // Show ASR latency early if available
+                    if (message.latency && message.latency.asr_ms) {
+                        updateLatencyDisplay({
+                            asr_ms: message.latency.asr_ms,
+                            model_ms: null,
+                            tts_ms: null,
+                            total_ms: null,
+                        });
+                    }
                     break;
 
                 case 'response':
-                    addMessage('assistant', message.text, false);
-                    updateStatus('connected', 'Listening...');
+                    addMessage('assistant', message.text, false, message.latency);
 
                     // Play TTS audio if provided
                     if (message.audio) {
                         playAudio(message.audio);
+                    } else {
+                        // No audio, just reset processing state
+                        isProcessing = false;
+                        updateStatus('connected', 'Listening...');
                     }
 
-                    // Update latency
-                    const latency = Date.now() - startLatency;
-                    document.getElementById('latency').textContent = `${latency}ms`;
+                    // Update latency breakdown
+                    if (message.latency) {
+                        updateLatencyDisplay(message.latency);
+                    }
                     break;
 
                 case 'error':
                     console.error('Server error:', message.error);
+                    isProcessing = false;
+                    isSpeaking = false;
                     updateStatus('disconnected', `Error: ${message.error}`);
                     break;
 
@@ -626,6 +810,81 @@
                     // Keepalive response
                     break;
             }
+        }
+
+        // Update latency display with breakdown
+        function updateLatencyDisplay(latency) {
+            const maxLatency = 10000; // Max scale for bars (10 seconds)
+            
+            // Update total latency
+            if (latency.total_ms !== null && latency.total_ms !== undefined) {
+                const totalSec = (latency.total_ms / 1000).toFixed(2);
+                document.getElementById('latency').textContent = `${totalSec}s`;
+            }
+            
+            // Update ASR latency
+            if (latency.asr_ms !== null && latency.asr_ms !== undefined) {
+                const asrSec = (latency.asr_ms / 1000).toFixed(2);
+                document.getElementById('asr-latency').textContent = `${asrSec}s`;
+                const asrBar = document.getElementById('asr-bar');
+                asrBar.style.width = `${Math.min((latency.asr_ms / maxLatency) * 100, 100)}%`;
+            }
+            
+            // Update Model latency
+            if (latency.model_ms !== null && latency.model_ms !== undefined) {
+                const modelSec = (latency.model_ms / 1000).toFixed(2);
+                document.getElementById('model-latency').textContent = `${modelSec}s`;
+                const modelBar = document.getElementById('model-bar');
+                modelBar.style.width = `${Math.min((latency.model_ms / maxLatency) * 100, 100)}%`;
+            } else {
+                document.getElementById('model-latency').textContent = '...';
+            }
+            
+            // Update TTS latency
+            if (latency.tts_ms !== null && latency.tts_ms !== undefined) {
+                const ttsSec = (latency.tts_ms / 1000).toFixed(2);
+                document.getElementById('tts-latency').textContent = `${ttsSec}s`;
+                const ttsBar = document.getElementById('tts-bar');
+                ttsBar.style.width = `${Math.min((latency.tts_ms / maxLatency) * 100, 100)}%`;
+            } else {
+                document.getElementById('tts-latency').textContent = '...';
+            }
+        }
+
+        // Trigger barge-in: stop TTS and notify server
+        function triggerBargeIn() {
+            // Stop TTS playback
+            if (currentAudio && !currentAudio.paused) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0;
+            }
+            
+            isSpeaking = false;
+            isProcessing = false;
+            
+            // Notify server about barge-in
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'barge_in',
+                    timestamp: Date.now(),
+                }));
+            }
+            
+            updateStatus('connected', 'Listening... (interrupted)');
+            
+            // Add visual indicator
+            addSystemMessage('🔇 Response interrupted - listening...');
+        }
+        
+        // Add system message to transcript
+        function addSystemMessage(text) {
+            const transcript = document.getElementById('transcript');
+            const message = document.createElement('div');
+            message.className = 'message system';
+            message.style.cssText = 'background: #f0f0f0; border-left: 4px solid #999; font-style: italic; font-size: 0.9em;';
+            message.innerHTML = `<div class="text">${text}</div>`;
+            transcript.appendChild(message);
+            transcript.scrollTop = transcript.scrollHeight;
         }
 
         // Play TTS audio
@@ -638,16 +897,38 @@
 
             const audio = new Audio(`data:audio/wav;base64,${base64Audio}`);
             currentAudio = audio;
+            
+            // Track speaking state
+            audio.onplay = () => {
+                isSpeaking = true;
+                updateStatus('active', '🔊 Speaking...');
+                console.log('TTS playback started');
+            };
+            
+            audio.onended = () => {
+                isSpeaking = false;
+                isProcessing = false;
+                updateStatus('connected', 'Listening...');
+                console.log('TTS playback ended');
+            };
+            
+            audio.onpause = () => {
+                isSpeaking = false;
+                console.log('TTS playback paused');
+            };
+            
+            audio.onerror = (error) => {
+                console.error('Audio playback error:', error);
+                isSpeaking = false;
+                isProcessing = false;
+                updateStatus('connected', 'Listening...');
+            };
 
             audio.play().catch(error => {
                 console.error('Audio playback error:', error);
+                isSpeaking = false;
+                isProcessing = false;
             });
-
-            // Detect barge-in (user speaks while bot is talking)
-            audio.onplay = () => {
-                // TODO: Implement VAD-based barge-in detection
-                // When user starts speaking, pause audio and send barge_in event
-            };
         }
 
         // Get auth token (stub - implement proper auth)

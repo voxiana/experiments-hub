@@ -487,6 +487,8 @@ async def websocket_endpoint(websocket: WebSocket, call_id: str):
                         data = json.loads(call_data)
                         language = data.get("language", "auto")
                     
+                    asr_start_time = time.time()
+                    
                     # Use base64 endpoint for raw PCM audio (more efficient)
                     if audio_format == "pcm16":
                         # Send directly as base64 PCM to ASR service
@@ -522,26 +524,99 @@ async def websocket_endpoint(websocket: WebSocket, call_id: str):
                         
                         os.unlink(tmp_path)
                     
+                    asr_latency = (time.time() - asr_start_time) * 1000  # ms
+                    
                     if response.status_code == 200:
                         result = response.json()
                         transcript = result.get("text", "").strip()
                         
                         if transcript:
-                            # Send final transcript
+                            # Send final transcript with ASR latency
                             await websocket.send_json({
                                 "type": "transcript_final",
                                 "text": transcript,
                                 "language": result.get("language", language),
                                 "timestamp": time.time(),
+                                "latency": {"asr_ms": round(asr_latency, 2)},
                             })
                             
-                            # TODO: Call NLU service for response
-                            # For now, send a mock response
-                            await websocket.send_json({
+                            # Get tenant_id from call data
+                            tenant_id = "demo"
+                            if call_data:
+                                tenant_id = json.loads(call_data).get("tenant_id", "demo")
+                            
+                            # Call NLU service for AI response
+                            model_response_text = ""
+                            model_latency = 0
+                            
+                            try:
+                                model_start_time = time.time()
+                                nlu_response = await http_client.client.post(
+                                    f"{NLU_SERVICE_URL}/process",
+                                    params={
+                                        "call_id": call_id,
+                                        "text": transcript,
+                                        "tenant_id": tenant_id,
+                                        "language": language if language != "auto" else "en",
+                                    },
+                                    timeout=60.0,  # LLM can take time
+                                )
+                                model_latency = (time.time() - model_start_time) * 1000
+                                
+                                if nlu_response.status_code == 200:
+                                    nlu_result = nlu_response.json()
+                                    model_response_text = nlu_result.get("text_response", "")
+                                    logger.info(f"NLU response: {model_response_text[:100]}...")
+                                else:
+                                    logger.error(f"NLU service error: {nlu_response.status_code} - {nlu_response.text}")
+                                    model_response_text = f"I heard you say: {transcript}"
+                            except Exception as e:
+                                logger.error(f"Error calling NLU service: {e}", exc_info=True)
+                                model_response_text = f"I heard you say: {transcript}"
+                            
+                            # Call TTS service to generate audio response
+                            tts_audio_base64 = None
+                            tts_latency = 0
+                            
+                            if model_response_text:
+                                try:
+                                    tts_start_time = time.time()
+                                    tts_response = await http_client.client.post(
+                                        f"{TTS_SERVICE_URL}/synthesize",
+                                        json={
+                                            "text": model_response_text,
+                                            "language": language if language in ["ar", "en"] else "en",
+                                        },
+                                        timeout=60.0,  # TTS can take time
+                                    )
+                                    tts_latency = (time.time() - tts_start_time) * 1000
+                                    
+                                    if tts_response.status_code == 200:
+                                        tts_result = tts_response.json()
+                                        tts_audio_base64 = tts_result.get("audio_base64")
+                                        logger.info(f"TTS generated audio: {tts_result.get('duration_seconds', 0):.2f}s")
+                                    else:
+                                        logger.error(f"TTS service error: {tts_response.status_code} - {tts_response.text}")
+                                except Exception as e:
+                                    logger.error(f"Error calling TTS service: {e}", exc_info=True)
+                            
+                            # Send response with latency metrics
+                            response_message = {
                                 "type": "response",
-                                "text": f"I heard you say: {transcript}",
+                                "text": model_response_text,
                                 "timestamp": time.time(),
-                            })
+                                "latency": {
+                                    "asr_ms": round(asr_latency, 2),
+                                    "model_ms": round(model_latency, 2),
+                                    "tts_ms": round(tts_latency, 2),
+                                    "total_ms": round(asr_latency + model_latency + tts_latency, 2),
+                                },
+                            }
+                            
+                            if tts_audio_base64:
+                                response_message["audio"] = tts_audio_base64
+                            
+                            await websocket.send_json(response_message)
                         else:
                             # No speech detected
                             await websocket.send_json({

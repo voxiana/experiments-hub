@@ -7,6 +7,7 @@ Supports tool calling, RAG integration, and multi-turn context management
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Dict, List, Optional, Any
 from enum import Enum
@@ -22,18 +23,22 @@ logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 # ============================================================================
-# Configuration
+# Configuration (read from environment variables)
 # ============================================================================
 
 # vLLM server endpoint (OpenAI-compatible API)
-VLLM_URL = "http://vllm:8000/v1"
-MODEL_NAME = "Qwen/Qwen3-8B"  # or "meta-llama/Llama-3.1-70B-Instruct"
+# Note: Within Docker network, vllm container exposes port 8000 internally
+VLLM_BASE_URL = os.getenv("VLLM_URL", "http://vllm:8000")
+VLLM_URL = f"{VLLM_BASE_URL}/v1" if not VLLM_BASE_URL.endswith("/v1") else VLLM_BASE_URL
+MODEL_NAME = os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen3-8B")
 
 # RAG service
-RAG_URL = "http://rag-service:8080"
+RAG_URL = os.getenv("RAG_URL", "http://rag-service:8080")
 
 # CRM connectors
-CRM_URL = "http://connectors:8090"
+CRM_URL = os.getenv("CRM_URL", "http://connectors:8090")
+
+logger.info(f"NLU Config: VLLM_URL={VLLM_URL}, MODEL={MODEL_NAME}")
 
 # Langfuse for LLM observability
 langfuse = Langfuse()
