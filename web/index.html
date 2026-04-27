@@ -270,18 +270,30 @@
 
         .latency-item {
             display: grid;
-            grid-template-columns: 180px 1fr 80px;
+            grid-template-columns: 180px 1.4fr 1fr 80px;
+            grid-template-areas: "label output bar value";
             align-items: center;
             gap: 15px;
         }
 
         .latency-label {
+            grid-area: label;
             font-size: 0.9em;
             color: #555;
             white-space: nowrap;
         }
 
+        .latency-output {
+            grid-area: output;
+            font-size: 0.82em;
+            color: #666;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
         .latency-bar-container {
+            grid-area: bar;
             height: 24px;
             background: #e2e8f0;
             border-radius: 12px;
@@ -309,6 +321,7 @@
         }
 
         .latency-value {
+            grid-area: value;
             font-weight: bold;
             font-size: 0.95em;
             color: #333;
@@ -318,10 +331,16 @@
         @media (max-width: 600px) {
             .latency-item {
                 grid-template-columns: 1fr 60px;
+                grid-template-areas:
+                    "label value"
+                    "output value";
                 gap: 8px;
             }
             .latency-label {
                 font-size: 0.8em;
+            }
+            .latency-output {
+                font-size: 0.75em;
             }
             .latency-bar-container {
                 display: none;
@@ -388,6 +407,7 @@
             <div class="latency-items">
                 <div class="latency-item">
                     <span class="latency-label">🎤 ASR (Speech-to-Text)</span>
+                    <span class="latency-output" id="asr-output">...</span>
                     <span class="latency-bar-container">
                         <span class="latency-bar asr-bar" id="asr-bar"></span>
                     </span>
@@ -395,6 +415,7 @@
                 </div>
                 <div class="latency-item">
                     <span class="latency-label">🧠 Model (LLM Response)</span>
+                    <span class="latency-output" id="model-output">...</span>
                     <span class="latency-bar-container">
                         <span class="latency-bar model-bar" id="model-bar"></span>
                     </span>
@@ -402,6 +423,7 @@
                 </div>
                 <div class="latency-item">
                     <span class="latency-label">🔊 TTS (Text-to-Speech)</span>
+                    <span class="latency-output" id="tts-output">...</span>
                     <span class="latency-bar-container">
                         <span class="latency-bar tts-bar" id="tts-bar"></span>
                     </span>
@@ -797,6 +819,7 @@
                     if (message.latency) {
                         updateLatencyDisplay(message.latency);
                     }
+                    updateComponentOutputs(message.component_outputs);
                     break;
 
                 case 'error':
@@ -849,6 +872,36 @@
             } else {
                 document.getElementById('tts-latency').textContent = '...';
             }
+        }
+
+        function truncateOutputText(text, maxLength = 80) {
+            if (typeof text !== 'string') {
+                return '';
+            }
+            if (text.length <= maxLength) {
+                return text;
+            }
+            return `${text.slice(0, maxLength - 3)}...`;
+        }
+
+        function setComponentOutput(elementId, outputText) {
+            const element = document.getElementById(elementId);
+            const hasText = typeof outputText === 'string' && outputText.trim().length > 0;
+            if (hasText) {
+                const trimmed = outputText.trim();
+                element.textContent = truncateOutputText(trimmed);
+                element.title = trimmed;
+            } else {
+                element.textContent = '...';
+                element.title = '';
+            }
+        }
+
+        function updateComponentOutputs(componentOutputs) {
+            const outputs = componentOutputs || {};
+            setComponentOutput('asr-output', outputs.asr_text);
+            setComponentOutput('model-output', outputs.model_text);
+            setComponentOutput('tts-output', outputs.tts_text);
         }
 
         // Trigger barge-in: stop TTS and notify server

@@ -611,6 +611,11 @@ async def websocket_endpoint(websocket: WebSocket, call_id: str):
                                     "tts_ms": round(tts_latency, 2),
                                     "total_ms": round(asr_latency + model_latency + tts_latency, 2),
                                 },
+                                "component_outputs": {
+                                    "asr_text": transcript,
+                                    "model_text": model_response_text,
+                                    "tts_text": model_response_text,
+                                },
                             }
                             
                             if tts_audio_base64:

@@ -1,0 +1,24 @@
+baseline:
+  enabled: true
+  base_url: http://tts-service:8002
+  synthesize_path: /synthesize
+  timeout_seconds: 120
+
+models:
+  - backend_id: xtts_local_default
+    adapter: http_tts
+    base_url: http://tts-service:8002
+    synthesize_path: /synthesize
+    timeout_seconds: 120
+    request_template:
+      language: ar
+
+  # Duplicate entry is intentional as a template for adding a second backend.
+  - backend_id: xtts_local_english_profile
+    adapter: http_tts
+    base_url: http://tts-service:8002
+    synthesize_path: /synthesize
+    timeout_seconds: 120
+    request_template:
+      language: en
+

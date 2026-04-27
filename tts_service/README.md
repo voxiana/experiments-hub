@@ -2,7 +2,30 @@
 
 ## Overview
 
-The TTS (Text-to-Speech) Service provides neural speech synthesis for the Voice AI CX Platform. Built with Coqui XTTS v2, it delivers multilingual, expressive speech with voice cloning capabilities. The service supports both streaming and non-streaming synthesis with controllable prosody for natural-sounding Arabic and English voices.
+The TTS (Text-to-Speech) Service is now a thin FastAPI proxy for Voxtral TTS served by a `vllm-omni` sidecar.
+
+## Voxtral Migration Notes (Current)
+
+- Model backend: `mistralai/Voxtral-4B-TTS-2603` served from `tts-vllm` (`vllm-omni`)
+- API contract preserved: `POST /synthesize` still returns `audio_base64`, `duration_seconds`, `sample_rate`
+- Voice selection now uses preset names (for example: `casual_male`, `casual_female`)
+- `reference_audio` cloning is no longer supported and returns `400`
+- The previous `bootstrap_voices.py` / `voices/reference_voice.wav` workflow is no longer used at runtime
+
+### Required Environment Variables
+
+```bash
+TTS_VLLM_URL=http://tts-vllm:8000/v1
+TTS_MODEL=mistralai/Voxtral-4B-TTS-2603
+TTS_DEFAULT_VOICE=casual_male
+HF_TOKEN=<optional>
+HUGGING_FACE_HUB_TOKEN=<optional>
+```
+
+### License and Hardware Notes
+
+- `mistralai/Voxtral-4B-TTS-2603` is licensed under `CC-BY-NC-4.0` (non-commercial).
+- The sidecar requires a GPU with at least 16GB VRAM for BF16 inference.
 
 ## Architecture
 

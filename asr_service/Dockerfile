@@ -1,6 +1,5 @@
 # ASR Service Dockerfile
 # Multi-stage build for optimized image size
-# Using CUDA 12.4 with cuDNN 9 (required by faster-whisper/CTranslate2)
 
 # ============================================================================
 # Stage 1: Builder
@@ -56,9 +55,6 @@ RUN grep -v "^torch" requirements.txt | \
     grep -v "^#" | \
     grep -v "^$" > requirements_filtered.txt && \
     pip install --no-cache-dir -r requirements_filtered.txt
-
-# Install Silero VAD from git
-RUN pip install --no-cache-dir git+https://github.com/snakers4/silero-vad.git
 
 # ============================================================================
 # Stage 2: Runtime
@@ -121,9 +117,8 @@ ENV TORCH_HOME=/root/.cache/torch
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
 
 # Set default model config
-ENV WHISPER_MODEL=large-v3
+ENV ASR_MODEL=mistralai/Voxtral-Mini-4B-Realtime-2602
 ENV DEVICE=cuda
-ENV COMPUTE_TYPE=float16
 
 # Set cuDNN environment variables (helps with library loading)
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH

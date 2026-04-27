@@ -1,6 +1,28 @@
 # ASR Service - Streaming Speech Recognition
 
-Standalone ASR (Automatic Speech Recognition) service using **faster-whisper** (Whisper large-v3) with **Silero VAD** for voice activity detection.
+Standalone ASR (Automatic Speech Recognition) service using **Voxtral Realtime** (`mistralai/Voxtral-Mini-4B-Realtime-2602`) with **Silero VAD** for voice activity detection.
+
+## Voxtral Migration Notes (Current)
+
+- Active model runtime: `transformers` + `VoxtralRealtimeForConditionalGeneration`
+- Default model env: `ASR_MODEL=mistralai/Voxtral-Mini-4B-Realtime-2602`
+- Backward compatibility: `WHISPER_MODEL` is still accepted as a deprecated alias
+- Device env: `DEVICE=cuda` is required for practical performance (CPU is not recommended)
+- Response shape is unchanged (`text`, `language`, `segments`, timing fields), but segment timestamps are returned as a single utterance-level segment.
+
+### Required Environment Variables
+
+```bash
+ASR_MODEL=mistralai/Voxtral-Mini-4B-Realtime-2602
+DEVICE=cuda
+HF_TOKEN=<optional>
+HUGGING_FACE_HUB_TOKEN=<optional>
+```
+
+### Hardware Notes
+
+- Voxtral Realtime 4B is BF16 and generally needs a GPU with at least 16GB VRAM.
+- Keep `/root/.cache` mounted to persist model downloads between restarts.
 
 ## Features
 

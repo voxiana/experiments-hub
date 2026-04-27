@@ -1,18 +1,14 @@
 """
 ASR Service - Streaming Speech Recognition
-Uses faster-whisper (large-v3) with silero-vad for voice activity detection
-Supports real-time streaming with low latency
+Uses Voxtral Realtime via Transformers with Silero VAD for voice activity detection.
 """
 
 import os
 
-# Set environment variables BEFORE importing torch/faster_whisper to prevent CUDA loading
-# This must happen before any CUDA-related imports
+# Keep CPU override behavior before torch import.
 _device = os.environ.get("DEVICE", "").lower()
 if _device == "cpu":
-    # Hide CUDA devices to prevent faster-whisper from trying to load CUDA/cuDNN libraries
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    # Suppress cuDNN warnings
     os.environ["CUDNN_LOGINFO_DBG"] = "0"
     os.environ["CUDNN_LOGDEST_DBG"] = ""
 
@@ -22,10 +18,11 @@ import logging
 import time
 from typing import AsyncIterator, Optional
 from concurrent.futures import ThreadPoolExecutor
+import librosa
 import numpy as np
 import torch
 
-from faster_whisper import WhisperModel
+from transformers import AutoProcessor, VoxtralRealtimeForConditionalGeneration
 import grpc
 from grpc import aio
 
@@ -39,38 +36,35 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================================
 
-# Model configuration - read from environment variables if set (from run.py)
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
+# Model configuration - keep WHISPER_MODEL as deprecated alias for compatibility.
+ASR_MODEL = os.environ.get(
+    "ASR_MODEL",
+    os.environ.get("WHISPER_MODEL", "mistralai/Voxtral-Mini-4B-Realtime-2602"),
+)
 _requested_device = os.environ.get("DEVICE", "").lower()
 
 # Determine device: respect environment variable, fall back to auto-detection
 if _requested_device == "cpu":
     DEVICE = "cpu"
-    COMPUTE_TYPE = os.environ.get("COMPUTE_TYPE", "int8")
 elif _requested_device == "cuda":
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    COMPUTE_TYPE = os.environ.get("COMPUTE_TYPE", "float16" if DEVICE == "cuda" else "int8")
 else:
-    # Auto-detect
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    COMPUTE_TYPE = os.environ.get("COMPUTE_TYPE", "float16" if DEVICE == "cuda" else "int8")
 
 # Force CPU if CUDA is requested but not available
 if DEVICE == "cuda" and not torch.cuda.is_available():
     logger.warning("CUDA requested but not available. Falling back to CPU.")
     DEVICE = "cpu"
-    COMPUTE_TYPE = "int8"
 
-BEAM_SIZE = 1  # Increase to 5 for higher accuracy, lower speed
 VAD_THRESHOLD = 0.5
 
 # Audio configuration
-SAMPLE_RATE = 16000  # 16kHz
+INPUT_SAMPLE_RATE = 16000
 CHUNK_DURATION_MS = 250  # 250ms chunks for streaming
-CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
+CHUNK_SIZE = int(INPUT_SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
 
 # VAD configuration
-VAD_FRAME_SIZE = 512  # samples (32ms at 16kHz)
+VAD_FRAME_SIZE = 512
 
 # ============================================================================
 # VAD Service (Silero VAD)
@@ -125,7 +119,7 @@ class VADService:
         audio_tensor = torch.from_numpy(audio_chunk).float().to(DEVICE)
 
         with torch.no_grad():
-            speech_prob = self.model(audio_tensor, SAMPLE_RATE).item()
+            speech_prob = self.model(audio_tensor, INPUT_SAMPLE_RATE).item()
 
         logger.debug(f"VAD: Speech probability = {speech_prob:.3f}")
         return speech_prob
@@ -135,7 +129,7 @@ class VADService:
         Get speech segments with timestamps
         Returns: [(start_sample, end_sample), ...]
         """
-        logger.info(f"VAD: Analyzing {len(audio)} samples ({len(audio)/SAMPLE_RATE:.2f}s) for speech segments")
+        logger.info(f"VAD: Analyzing {len(audio)} samples ({len(audio)/INPUT_SAMPLE_RATE:.2f}s) for speech segments")
         start_time = time.time()
 
         audio_tensor = torch.from_numpy(audio).float()
@@ -143,7 +137,7 @@ class VADService:
         speech_timestamps = self.get_speech_timestamps(
             audio_tensor,
             self.model,
-            sampling_rate=SAMPLE_RATE,
+            sampling_rate=INPUT_SAMPLE_RATE,
             threshold=VAD_THRESHOLD,
             min_speech_duration_ms=250,
             min_silence_duration_ms=100,
@@ -154,68 +148,39 @@ class VADService:
 
         logger.info(f"VAD: Found {len(segments)} speech segment(s) in {elapsed:.3f}s")
         for i, (start, end) in enumerate(segments):
-            duration = (end - start) / SAMPLE_RATE
-            logger.info(f"   Segment {i+1}: {start/SAMPLE_RATE:.2f}s - {end/SAMPLE_RATE:.2f}s (duration: {duration:.2f}s)")
+            duration = (end - start) / INPUT_SAMPLE_RATE
+            logger.info(f"   Segment {i+1}: {start/INPUT_SAMPLE_RATE:.2f}s - {end/INPUT_SAMPLE_RATE:.2f}s (duration: {duration:.2f}s)")
 
         return segments
 
 # ============================================================================
-# ASR Service (faster-whisper)
+# ASR Service (Voxtral Realtime)
 # ============================================================================
 
 class ASRService:
     """
-    Streaming ASR using faster-whisper
+    Streaming ASR using Voxtral Realtime
     Supports Arabic and English with code-switching
     """
 
     def __init__(self):
         logger.info("=" * 60)
-        logger.info("Initializing ASR Service (faster-whisper)")
+        logger.info("Initializing ASR Service (Voxtral Realtime)")
         logger.info("=" * 60)
-        logger.info(f"Model: {WHISPER_MODEL}")
+        logger.info(f"Model: {ASR_MODEL}")
         logger.info(f"Device: {DEVICE}")
-        logger.info(f"Compute Type: {COMPUTE_TYPE}")
-        logger.info(f"Beam Size: {BEAM_SIZE}")
-        logger.info(f"Sample Rate: {SAMPLE_RATE} Hz")
+        logger.info(f"Input Sample Rate: {INPUT_SAMPLE_RATE} Hz")
 
-        logger.info(f"Loading Whisper model: {WHISPER_MODEL}...")
-        logger.info(f"   Device: {DEVICE}, Compute Type: {COMPUTE_TYPE}")
-        
-        # Try to initialize with specified device, fall back to CPU on error
-        device = DEVICE
-        compute_type = COMPUTE_TYPE
-        
-        try:
-            self.model = WhisperModel(
-                WHISPER_MODEL,
-                device=device,
-                compute_type=compute_type,
-                num_workers=4,
-            )
-            logger.info(f"✅ Whisper {WHISPER_MODEL} loaded on {device}")
-        except Exception as e:
-            error_msg = str(e).lower()
-            # Check if it's a CUDA/cuDNN related error
-            if device == "cuda" or "cuda" in error_msg or "cudnn" in error_msg:
-                logger.warning(f"Failed to load model on {device}: {e}")
-                logger.warning("Falling back to CPU...")
-                device = "cpu"
-                compute_type = "int8"
-                try:
-                    self.model = WhisperModel(
-                        WHISPER_MODEL,
-                        device=device,
-                        compute_type=compute_type,
-                        num_workers=4,
-                    )
-                    logger.info(f"✅ Whisper {WHISPER_MODEL} loaded on {device} (fallback)")
-                except Exception as e2:
-                    logger.error(f"Failed to load model on CPU: {e2}")
-                    raise
-            else:
-                logger.error(f"Failed to load model: {e}")
-                raise
+        logger.info(f"Loading Voxtral model: {ASR_MODEL}...")
+        self.processor = AutoProcessor.from_pretrained(ASR_MODEL)
+        self.model = VoxtralRealtimeForConditionalGeneration.from_pretrained(
+            ASR_MODEL,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+        )
+        self.model.eval()
+        self.target_sample_rate = self.processor.feature_extractor.sampling_rate
+        logger.info(f"✅ Voxtral loaded on {self.model.device} (target_sr={self.target_sample_rate} Hz)")
 
         logger.info("Initializing VAD service...")
         self.vad = VADService()
@@ -225,8 +190,8 @@ class ASRService:
 
         logger.info("=" * 60)
         logger.info(f"✅ ASR Service initialized successfully")
-        logger.info(f"   Model: {WHISPER_MODEL}")
-        logger.info(f"   Device: {DEVICE}")
+        logger.info(f"   Model: {ASR_MODEL}")
+        logger.info(f"   Device: {self.model.device}")
         logger.info(f"   Ready to accept requests")
         logger.info("=" * 60)
 
@@ -275,8 +240,8 @@ class ASRService:
                     logger.debug(f"Stream: Speech detected (prob={speech_prob:.3f}), buffer size: {len(utterance_buffer)} chunks")
 
                     # Yield interim result if enough audio
-                    if len(utterance_buffer) * len(audio_float32) > SAMPLE_RATE * 1.0:  # 1 second
-                        logger.info(f"Stream: Generating interim result ({len(utterance_buffer)} chunks, ~{len(utterance_buffer)*len(audio_float32)/SAMPLE_RATE:.1f}s)")
+                    if len(utterance_buffer) * len(audio_float32) > INPUT_SAMPLE_RATE * 1.0:
+                        logger.info(f"Stream: Generating interim result ({len(utterance_buffer)} chunks, ~{len(utterance_buffer)*len(audio_float32)/INPUT_SAMPLE_RATE:.1f}s)")
                         utterance = np.concatenate(utterance_buffer)
 
                         # Run transcription in thread pool
@@ -307,7 +272,7 @@ class ASRService:
                 logger.info(f"Stream: Silence detected ({silence_duration:.1f}s), generating final result...")
                 # Final transcription
                 utterance = np.concatenate(utterance_buffer)
-                utterance_duration = len(utterance) / SAMPLE_RATE
+                utterance_duration = len(utterance) / INPUT_SAMPLE_RATE
                 logger.info(f"Stream: Final utterance duration: {utterance_duration:.2f}s")
 
                 loop = asyncio.get_event_loop()
@@ -351,41 +316,51 @@ class ASRService:
         if language == "auto":
             language = None
 
-        # Transcribe
-        segments, info = self.model.transcribe(
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+
+        if INPUT_SAMPLE_RATE != self.target_sample_rate:
+            audio = librosa.resample(
+                audio,
+                orig_sr=INPUT_SAMPLE_RATE,
+                target_sr=self.target_sample_rate,
+            )
+
+        inputs = self.processor(
             audio,
-            language=language,
-            task=task,
-            beam_size=BEAM_SIZE if final else 1,  # Higher beam for final
-            vad_filter=False,  # Already using custom VAD
-            word_timestamps=final,  # Only for final
+            sampling_rate=self.target_sample_rate,
+            return_tensors="pt",
         )
+        inputs = inputs.to(self.model.device, dtype=self.model.dtype)
+        max_new_tokens = 256 if final else 96
+        outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+        decoded = self.processor.batch_decode(outputs, skip_special_tokens=True)
+        full_text = decoded[0].strip() if decoded else ""
 
-        # Collect segments
+        duration_seconds = len(audio) / self.target_sample_rate
         segments_list = []
-        full_text = ""
-
-        for segment in segments:
-            segments_list.append({
-                "start": segment.start,
-                "end": segment.end,
-                "text": segment.text,
-            })
-            full_text += segment.text
+        if full_text:
+            segments_list.append(
+                {
+                    "start": 0.0,
+                    "end": duration_seconds,
+                    "text": full_text,
+                }
+            )
 
         elapsed = time.time() - start_time
 
         logger.info(
-            f"Transcribed {len(audio)/SAMPLE_RATE:.2f}s audio in {elapsed:.3f}s "
+            f"Transcribed {duration_seconds:.2f}s audio in {elapsed:.3f}s "
             f"({'final' if final else 'interim'}): {full_text[:50]}..."
         )
 
         return {
-            "text": full_text.strip(),
-            "language": info.language,
-            "language_probability": info.language_probability,
+            "text": full_text,
+            "language": language or "unknown",
+            "language_probability": 0.0,
             "segments": segments_list,
-            "duration": info.duration,
+            "duration": duration_seconds,
             "inference_time": elapsed,
         }
 
@@ -438,7 +413,7 @@ class ASRService:
                 # Use ffmpeg to convert to WAV
                 cmd = [
                     'ffmpeg', '-i', audio_path,
-                    '-ar', '16000',  # Resample to 16kHz
+                    '-ar', str(INPUT_SAMPLE_RATE),
                     '-ac', '1',      # Convert to mono
                     '-f', 'wav',     # Output format
                     '-y',            # Overwrite
@@ -494,14 +469,13 @@ class ASRService:
         logger.info(f"   Channels: {'mono' if audio.ndim == 1 else audio.shape[1]}")
 
         # Resample if needed
-        if sr != SAMPLE_RATE:
-            logger.info(f"Resampling from {sr} Hz to {SAMPLE_RATE} Hz...")
+        if sr != INPUT_SAMPLE_RATE:
+            logger.info(f"Resampling from {sr} Hz to {INPUT_SAMPLE_RATE} Hz...")
             resample_start = time.time()
-            import librosa
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=SAMPLE_RATE)
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=INPUT_SAMPLE_RATE)
             resample_time = time.time() - resample_start
             logger.info(f"✅ Resampling complete in {resample_time:.2f}s")
-            sr = SAMPLE_RATE
+            sr = INPUT_SAMPLE_RATE
 
         # Detect language if auto
         if language == "auto":
@@ -631,7 +605,7 @@ async def run_rest_server():
 
     @app.get("/health")
     async def health():
-        return {"status": "healthy", "model": WHISPER_MODEL, "device": DEVICE}
+        return {"status": "healthy", "model": ASR_MODEL, "device": DEVICE}
 
     @app.post("/transcribe")
     async def transcribe(file: UploadFile = File(...), language: str = "auto"):

@@ -30,7 +30,7 @@ tracer = trace.get_tracer(__name__)
 # Note: Within Docker network, vllm container exposes port 8000 internally
 VLLM_BASE_URL = os.getenv("VLLM_URL", "http://vllm:8000")
 VLLM_URL = f"{VLLM_BASE_URL}/v1" if not VLLM_BASE_URL.endswith("/v1") else VLLM_BASE_URL
-MODEL_NAME = os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen3-8B")
+MODEL_NAME = os.getenv("VLLM_MODEL_NAME")
 
 # RAG service
 RAG_URL = os.getenv("RAG_URL", "http://rag-service:8080")

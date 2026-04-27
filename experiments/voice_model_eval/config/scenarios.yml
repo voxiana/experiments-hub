@@ -1,0 +1,16 @@
+scenarios:
+  - case_id: ar_short_greeting
+    language: ar
+    text: "مرحبا بك في خدمة العملاء"
+    tags: ["short", "arabic"]
+
+  - case_id: ar_customer_support
+    language: ar
+    text: "تم تسجيل طلبك وسيقوم الفريق بالرد خلال اربع وعشرين ساعة."
+    tags: ["medium", "arabic", "support"]
+
+  - case_id: en_short_greeting
+    language: en
+    text: "Welcome to customer support."
+    tags: ["short", "english"]
+
