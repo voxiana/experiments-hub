@@ -73,9 +73,10 @@ services:
     # GPU support enabled
     environment:
       NVIDIA_VISIBLE_DEVICES: all
-      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
+      ASR_MODEL: ${ASR_MODEL:-mistralai/Voxtral-Mini-4B-Realtime-2602}
       DEVICE: cuda
-      COMPUTE_TYPE: float16  # float16 for GPU speed
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     ports:
       - "50051:8050"
     volumes:
@@ -99,7 +100,7 @@ services:
     environment:
       # Note: vllm exposes port 8000 internally (8003 is only for host access)
       VLLM_URL: ${VLLM_URL:-http://vllm:8000}
-      VLLM_MODEL_NAME: ${VLLM_MODEL_NAME:-Qwen/Qwen3-8B}
+      VLLM_MODEL_NAME: ${VLLM_MODEL_NAME:-microsoft/Phi-4-mini-instruct}
       RAG_URL: http://rag-service:8080
       CRM_URL: http://connectors:8090
       REDIS_URL: redis://redis:6379/0
@@ -118,30 +119,118 @@ services:
       vllm:
         condition: service_started  # Changed to service_started to allow nlu-service to start even if vllm isn't healthy yet
 
+  tts-vllm:
+    image: vllm/vllm-omni:v0.18.0
+    container_name: voiceai-tts-vllm
+    command:
+      - vllm
+      - serve
+      - mistralai/Voxtral-4B-TTS-2603
+      - --omni
+      - --gpu-memory-utilization
+      - "0.70"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      HF_HOME: /root/.cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - model_cache:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   tts-service:
     build:
       context: ./tts_service
       dockerfile: Dockerfile
     container_name: voiceai-tts
-    # GPU support - remove runtime and deploy sections for CPU-only mode
-    # Uncomment below for GPU support (requires NVIDIA Container Toolkit)
-    # runtime: nvidia
     environment:
-      # NVIDIA_VISIBLE_DEVICES: all  # Uncomment for GPU
-      DEVICE: ${DEVICE:-cpu}  # Default to CPU
+      DEVICE: cpu
+      TTS_VLLM_URL: http://tts-vllm:8000/v1
+      TTS_MODEL: ${TTS_MODEL:-mistralai/Voxtral-4B-TTS-2603}
+      TTS_DEFAULT_VOICE: ${TTS_DEFAULT_VOICE:-casual_male}
     ports:
       - "8002:8002"
+    depends_on:
+      - tts-vllm
+
+
+  # image-vllm:
+  #   image: vllm/vllm-omni:v0.18.0
+  #   container_name: voiceai-image-vllm
+  #   command:
+  #     - vllm
+  #     - serve
+  #     - Qwen/Qwen-Image-2512
+  #     - --omni
+  #     - --host
+  #     - 0.0.0.0
+  #     - --port
+  #     - "8000"
+  #     - --enable-layerwise-offload     # most aggressive: 1 DiT block on GPU at a time
+  #     - --quantization
+  #     - int8                           # halves weight memory at inference time
+  #     - --enable-cpu-offload           # loads model to CPU first, swaps to GPU per stage
+  #     - --vae-use-slicing              # decode VAE in slices to cut peak VRAM
+  #     - --vae-use-tiling               # tile VAE spatially for high-res images
+  #     - --enforce-eager                # disables torch.compile, faster cold start
+  #   environment:
+  #     NVIDIA_VISIBLE_DEVICES: all
+  #     HF_HOME: /root/.cache/huggingface
+  #     HF_TOKEN: ${HF_TOKEN:-}
+  #     HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+  #   ports:
+  #     - "8003:8000"
+  #   volumes:
+  #     - model_cache:/root/.cache
+  #     - ~/.cache/huggingface:/root/.cache/huggingface
+  #     - ./models:/models
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+
+  eval-runner:
+    build:
+      context: .
+      dockerfile: ./experiments/voice_model_eval/Dockerfile
+    container_name: voiceai-eval-runner
+    profiles:
+      - eval
+    environment:
+      ENABLE_OTEL: ${ENABLE_OTEL:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      ENABLE_PROMETHEUS: ${ENABLE_PROMETHEUS:-false}
+      PROMETHEUS_PORT: ${PROMETHEUS_PORT:-9108}
+      BASELINE_TTS_URL: ${BASELINE_TTS_URL:-http://tts-service:8002}
+    command: >
+      python scripts/run_eval.py
+      --models config/models.yml
+      --scenarios config/scenarios.yml
+      --output-dir results
+      --baseline-url ${BASELINE_TTS_URL:-http://tts-service:8002}
+      --concurrency ${VOICE_EVAL_CONCURRENCY:-2}
+    working_dir: /app/experiments/voice_model_eval
     volumes:
-      # - model_cache:/root/.cache
-      - ./tts_service/voices:/app/voices
-    # Uncomment below for GPU support
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+      - ./experiments/voice_model_eval/config:/app/experiments/voice_model_eval/config
+      - ./experiments/voice_model_eval/data:/app/experiments/voice_model_eval/data
+      - ./experiments/voice_model_eval/results:/app/experiments/voice_model_eval/results
+    depends_on:
+      - tts-service
+      - otel-collector
+    restart: "no"
 
   rag-service:
     build:
@@ -173,22 +262,19 @@ services:
   vllm:
     image: vllm/vllm-openai:latest
     container_name: voiceai-vllm
-    # NOTE: Qwen3-8B with tool calling support
-    # Original working configuration
+    # Phi-4-mini-instruct with tool calling support
     command: >
-      --model Qwen/Qwen3-8B
-      --max-model-len 12000
-      --served-model-name Qwen/Qwen3-8B
-      --tokenizer Qwen/Qwen3-8B
-      --disable-log-requests
+      --model microsoft/Phi-4-mini-instruct
+      --max-model-len 4096
+      --served-model-name microsoft/Phi-4-mini-instruct
+      --tokenizer microsoft/Phi-4-mini-instruct
       --max-num-seqs 2
       --enforce-eager
-      --gpu-memory-utilization 0.9
+      --gpu-memory-utilization 0.88
       --enable-auto-tool-choice
       --tool-call-parser hermes
-      --chat-template /models/qwen3_nonthinking.jinja
     ports:
-      - "8003:8000"  # Changed from 8000 to avoid conflict with gateway
+      - "8003:8000"
     volumes:
       - model_cache:/root/.cache
       - ~/.cache/huggingface:/root/.cache/huggingface
@@ -197,14 +283,12 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       HF_HOME: /root/.cache
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-    # GPU configuration for Docker Desktop on Windows
-    # Note: Docker Desktop must have GPU support enabled in Settings > Resources > WSL Integration
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1  # Use 1 GPU for 3B model (sufficient for RTX 4090)
+              count: 1
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -317,6 +401,7 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_INSTALL_PLUGINS: grafana-clock-panel
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/voiceai-overview.json
     volumes:
       - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
       - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources
@@ -331,7 +416,7 @@ services:
     container_name: voiceai-otel
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
-      - ./observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - ./observability/otel-collector-config.yml:/etc/otel-collector-config.yaml
     ports:
       - "4317:4317"  # OTLP gRPC
       - "4318:4318"  # OTLP HTTP

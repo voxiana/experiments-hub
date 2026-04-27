@@ -1,16 +1,14 @@
-# TTS Service - GPU-enabled FastAPI service
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+# TTS Service proxy image (no in-process model inference)
+FROM python:3.10-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install Python and system dependencies
-RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3-pip \
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ffmpeg \
-    espeak-ng \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Python environment
@@ -21,26 +19,14 @@ ENV PYTHONUNBUFFERED=1 \
 COPY requirements.txt /app/requirements.txt
 
 # Install Python dependencies
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy service code
 COPY server.py /app/server.py
-COPY bootstrap_voices.py /app/bootstrap_voices.py
-COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-
-# Make entrypoint executable
-RUN chmod +x /app/docker-entrypoint.sh
-
-# Create voices directory
-RUN mkdir -p /app/voices
-COPY voices/ /app/voices/
 
 # Expose port
 EXPOSE 8002
 
-# Use entrypoint script
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
-
 # Run the service
-CMD ["python3", "server.py"]
+CMD ["python", "server.py"]
 

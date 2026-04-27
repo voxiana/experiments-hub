@@ -1,5 +1,5 @@
 """
-Simplified TTS Service using Coqui XTTS v2
+TTS Service proxy for Voxtral TTS served by vllm-omni sidecar.
 """
 
 import base64
@@ -8,43 +8,27 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-import numpy as np
+import httpx
 import soundfile as sf
-import torch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
 
-# Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Fix for PyTorch 2.6+ weights_only default change
-# Patch torch.load to use weights_only=False for TTS compatibility
-_original_torch_load = torch.load
-def _patched_torch_load(*args, **kwargs):
-    kwargs.setdefault("weights_only", False)
-    return _original_torch_load(*args, **kwargs)
-torch.load = _patched_torch_load
-
-from TTS.api import TTS
-
-# Configuration
-os.environ["COQUI_TOS_AGREED"] = "1"
-
-MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+TTS_VLLM_URL = os.environ.get("TTS_VLLM_URL", "http://tts-vllm:8000/v1")
+TTS_MODEL = os.environ.get("TTS_MODEL", "mistralai/Voxtral-4B-TTS-2603")
+TTS_DEFAULT_VOICE = os.environ.get("TTS_DEFAULT_VOICE", "casual_male")
 SAMPLE_RATE = 24000
 
-# Path to reference voice (update this to your voice file)
-REFERENCE_VOICE = os.path.join(os.path.dirname(__file__), "voices", "reference_voice.wav")
 
-
-# Request/Response Models
 class SynthesizeRequest(BaseModel):
     text: str
-    language: str = "ar"  # ar, en
-    reference_audio: str | None = None  # Optional base64 audio to clone
+    language: str = "ar"
+    reference_audio: str | None = None
+    voice: str | None = None
+    speaker: str | None = None
 
 
 class SynthesizeResponse(BaseModel):
@@ -53,81 +37,56 @@ class SynthesizeResponse(BaseModel):
     sample_rate: int = SAMPLE_RATE
 
 
-# TTS Service
 class TTSService:
-    def __init__(self):
-        logger.info(f"Loading model: {MODEL_NAME} on {DEVICE}")
-        self.model = TTS(MODEL_NAME).to(DEVICE)
-        logger.info("Model loaded successfully")
+    def __init__(self, client: httpx.AsyncClient):
+        self.client = client
 
-    def synthesize(self, text: str, language: str, speaker_wav: str) -> tuple[bytes, float]:
-        """Generate speech from text."""
-        
-        # Generate audio
-        wav = self.model.tts(
-            text=text,
-            speaker_wav=speaker_wav,
-            language=language,
+    async def synthesize(self, text: str, voice: str | None) -> tuple[bytes, float]:
+        selected_voice = voice or TTS_DEFAULT_VOICE
+        payload = {
+            "model": TTS_MODEL,
+            "input": text,
+            "voice": selected_voice,
+            "response_format": "wav",
+        }
+        response = await self.client.post(
+            f"{TTS_VLLM_URL}/audio/speech",
+            json=payload,
+            timeout=120.0,
         )
-        
-        # Process audio
-        audio = self._process_audio(wav)
-        
-        # Convert to WAV bytes
-        duration = len(audio) / SAMPLE_RATE
-        audio_bytes = self._to_wav_bytes(audio)
-        
+        response.raise_for_status()
+        audio_bytes = response.content
+        duration = _duration_from_wav(audio_bytes)
         return audio_bytes, duration
 
-    def _process_audio(self, wav) -> np.ndarray:
-        """Process and clean the generated audio."""
-        
-        # Convert to numpy array
-        audio = np.array(wav, dtype=np.float32)
-        
-        # Ensure 1D
-        if audio.ndim > 1:
-            audio = audio.flatten()
-        
-        # Remove NaN/Inf values
-        audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        # Remove DC offset
-        audio = audio - np.mean(audio)
-        
-        # Normalize with headroom (-3dB)
-        max_val = np.max(np.abs(audio))
-        if max_val > 0:
-            audio = audio / max_val * 0.707
-        
-        # Apply fade in/out to prevent clicks (10ms)
-        fade_samples = int(SAMPLE_RATE * 0.01)
-        if len(audio) > fade_samples * 2:
-            fade_in = np.linspace(0, 1, fade_samples)
-            fade_out = np.linspace(1, 0, fade_samples)
-            audio[:fade_samples] *= fade_in
-            audio[-fade_samples:] *= fade_out
-        
-        return audio
 
-    def _to_wav_bytes(self, audio: np.ndarray) -> bytes:
-        """Convert audio array to WAV bytes."""
-        buffer = io.BytesIO()
-        sf.write(buffer, audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")
-        buffer.seek(0)
-        return buffer.read()
+def _duration_from_wav(audio_bytes: bytes) -> float:
+    try:
+        data, sample_rate = sf.read(io.BytesIO(audio_bytes), dtype="float32")
+        if data.ndim > 1:
+            samples = data.shape[0]
+        else:
+            samples = len(data)
+        return float(samples / sample_rate)
+    except Exception:
+        logger.warning("Failed to parse WAV duration; returning 0.0s", exc_info=True)
+        return 0.0
 
 
-# FastAPI App
 tts_service: TTSService | None = None
+http_client: httpx.AsyncClient | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global tts_service
-    tts_service = TTSService()
+    global tts_service, http_client
+    http_client = httpx.AsyncClient()
+    tts_service = TTSService(http_client)
     yield
+    if http_client is not None:
+        await http_client.aclose()
     tts_service = None
+    http_client = None
 
 
 app = FastAPI(title="TTS Service", version="1.0.0", lifespan=lifespan)
@@ -137,62 +96,39 @@ app = FastAPI(title="TTS Service", version="1.0.0", lifespan=lifespan)
 async def health():
     return {
         "status": "healthy",
-        "model": MODEL_NAME,
-        "device": DEVICE,
+        "model": TTS_MODEL,
+        "vllm_url": TTS_VLLM_URL,
     }
 
 
 @app.post("/synthesize", response_model=SynthesizeResponse)
 async def synthesize(request: SynthesizeRequest):
-    """Synthesize speech from text."""
-    
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text is required")
-    
-    # Determine speaker reference
+
     if request.reference_audio:
-        # Use provided base64 audio as reference
-        speaker_wav = _save_temp_audio(request.reference_audio)
-    else:
-        # Use default reference voice
-        if not os.path.exists(REFERENCE_VOICE):
-            raise HTTPException(
-                status_code=500,
-                detail=f"Reference voice not found: {REFERENCE_VOICE}"
-            )
-        speaker_wav = REFERENCE_VOICE
-    
-    try:
-        audio_bytes, duration = tts_service.synthesize(
-            text=request.text,
-            language=request.language,
-            speaker_wav=speaker_wav,
+        raise HTTPException(
+            status_code=400,
+            detail="reference-WAV cloning not supported by Voxtral TTS; pass 'voice' preset.",
         )
-        
+
+    if tts_service is None:
+        raise HTTPException(status_code=503, detail="TTS service not initialized")
+
+    try:
+        voice = request.voice or request.speaker
+        audio_bytes, duration = await tts_service.synthesize(request.text, voice)
         return SynthesizeResponse(
             audio_base64=base64.b64encode(audio_bytes).decode("utf-8"),
             duration_seconds=duration,
         )
-    
-    except Exception as e:
-        logger.error(f"Synthesis failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-    
-    finally:
-        # Cleanup temp file if created
-        if request.reference_audio and os.path.exists(speaker_wav):
-            os.remove(speaker_wav)
-
-
-def _save_temp_audio(base64_audio: str) -> str:
-    """Save base64 audio to a temp file and return the path."""
-    import tempfile
-    
-    audio_bytes = base64.b64decode(base64_audio)
-    
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        f.write(audio_bytes)
-        return f.name
+    except httpx.HTTPStatusError as exc:
+        detail = f"Voxtral backend error ({exc.response.status_code}): {exc.response.text}"
+        logger.error(detail)
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:
+        logger.error("Synthesis failed", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":

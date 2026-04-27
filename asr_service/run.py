@@ -6,7 +6,7 @@ Run the ASR service independently for testing and development
 Usage:
     python run.py                    # Start server on port 8050
     python run.py --port 8051        # Custom port
-    python run.py --model distil-large-v3  # Use smaller model
+    python run.py --model mistralai/Voxtral-Mini-4B-Realtime-2602
     python run.py --device cpu       # Use CPU instead of GPU
 
 Test with:
@@ -96,7 +96,7 @@ class StreamingTranscriptChunk(BaseModel):
 
 app = FastAPI(
     title="ASR Service (Standalone)",
-    description="Streaming ASR with Whisper large-v3 and VAD",
+    description="Streaming ASR with Voxtral Realtime and VAD",
     version="1.0.0",
 )
 
@@ -128,7 +128,6 @@ async def startup_event():
     logger.info("Configuration:")
     logger.info(f"   Model: {args.model}")
     logger.info(f"   Device: {args.device}")
-    logger.info(f"   Compute Type: {args.compute_type}")
     logger.info(f"   Host: {args.host}")
     logger.info(f"   Port: {args.port}")
     logger.info("=" * 60)
@@ -153,12 +152,11 @@ async def startup_event():
         # Initialize ASR service
         logger.info("=" * 60)
         logger.info("Initializing ASR service components...")
-        # IMPORTANT: Set environment variables BEFORE importing server module
-        # This prevents faster-whisper from trying to load CUDA/cuDNN when using CPU
+        # IMPORTANT: Set environment variables BEFORE importing server module.
         import os
-        os.environ['WHISPER_MODEL'] = args.model
+        os.environ['ASR_MODEL'] = args.model
+        os.environ['WHISPER_MODEL'] = args.model  # Deprecated alias for compatibility
         os.environ['DEVICE'] = args.device
-        os.environ['COMPUTE_TYPE'] = args.compute_type
 
         init_start = time.time()
         
@@ -166,8 +164,7 @@ async def startup_event():
         if args.device == "cpu":
             os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
-        # Import server module AFTER setting environment variables
-        # This ensures faster-whisper sees the CPU-only configuration
+        # Import server module after setting environment variables.
         from server import ASRService
         asr_service = ASRService()
         init_time = time.time() - init_start
@@ -569,9 +566,8 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=str,
-        default="large-v3",
-        choices=["large-v3", "large-v2", "medium", "small", "base", "tiny", "distil-large-v3"],
-        help="Whisper model to use (default: large-v3)",
+        default="mistralai/Voxtral-Mini-4B-Realtime-2602",
+        help="ASR model HF repo ID (default: mistralai/Voxtral-Mini-4B-Realtime-2602)",
     )
     parser.add_argument(
         "--device",
@@ -579,13 +575,6 @@ def parse_args():
         default="cuda" if torch.cuda.is_available() else "cpu",
         choices=["cuda", "cpu"],
         help="Device to run on (default: auto-detect)",
-    )
-    parser.add_argument(
-        "--compute-type",
-        type=str,
-        default="float16" if torch.cuda.is_available() else "int8",
-        choices=["float16", "int8", "float32"],
-        help="Compute type for inference (default: float16 on GPU, int8 on CPU)",
     )
     parser.add_argument(
         "--reload",
@@ -613,14 +602,12 @@ def main():
     logger.info(f"Host: {args.host}")
     logger.info(f"Model: {args.model}")
     logger.info(f"Device: {args.device}")
-    logger.info(f"Compute Type: {args.compute_type}")
     logger.info("=" * 60)
 
     # Check GPU availability
     if args.device == "cuda" and not torch.cuda.is_available():
         logger.warning("⚠️  CUDA requested but not available. Falling back to CPU.")
         args.device = "cpu"
-        args.compute_type = "int8"
 
     # Run server
     uvicorn.run(

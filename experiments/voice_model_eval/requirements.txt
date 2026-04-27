@@ -1,0 +1,7 @@
+httpx
+pyyaml
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+prometheus-client
+
